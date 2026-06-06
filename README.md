@@ -1,6 +1,6 @@
-# Hot Hand Fader
+# Betting the Regression
 
-**A mean reversion model for NBA player props that exploits short-term hot streak overreactions.**
+**A mean reversion model for NBA player props that exploits short-term hot and cold streak overreactions.**
 
 Tested across 3 NBA seasons (2022-23 through 2024-25) with **73.9% accuracy** on a 2,118-event proxy backtest.
 
@@ -63,12 +63,16 @@ Higher-variance stats (threes) show the strongest mean reversion effect.
 ---
 
 ## Project structure
-hot-hand-fader/
-├── hothandfade_v3.py            # Full backtest pipeline with cached steps
-├── daily_picks.py               # Production tool for daily predictions
+```
+betting-the-regression/
+├── daily_picks.py               # Production tool: grades yesterday, flags today
+├── odds_compare.py              # Pulls DraftKings lines via ESPN, generates dashboard.html
+├── hothandfade_v3.py            # Full multi-season backtest pipeline (cached)
+├── dashboard.html               # Auto-generated daily dashboard (open in browser)
 ├── 2026wcfgame7.py              # Real-world test: 2026 WCF Game 7 (SAS vs OKC)
 ├── nbagame7analysis.py          # Refined Game 7 analysis with playoff baselines
-└── *.csv                        # Backtest results and analysis outputs
+└── *.csv                        # Backtest results, daily predictions, performance log
+```
 
 ---
 
@@ -116,16 +120,25 @@ The model correctly flagged its own limitations — players with "limited playof
 pip install -r requirements.txt
 ```
 
-### Run the daily prediction tool
+### Run the daily workflow
 
 ```bash
-python daily_picks.py
+# Step 1 — generate today's picks
+python3.11 daily_picks.py
+
+# Step 2 — pull live DraftKings lines, generate dashboard, open in browser
+python3.11 odds_compare.py
 ```
 
-This will:
+`daily_picks.py` will:
 1. Auto-grade yesterday's predictions against actual outcomes
 2. Identify today's hot/cold streak candidates across all NBA and WNBA games
 3. Save predictions to `daily_predictions.csv` for future grading
+
+`odds_compare.py` will:
+1. Pull live prop lines from DraftKings via ESPN's public API (no auth required)
+2. Fuzzy-match flagged players, compute edge gaps, rank by tier
+3. Write `dashboard.html` and open it in the browser automatically
 
 ### Reproduce the multi-season backtest
 
@@ -148,4 +161,6 @@ This runs the full 3-season backtest, caches results to CSVs, and outputs the mu
 
 ## Author
 
-**Abhi Murmu** — built as a sports betting analytics portfolio project, May 2026.
+**Abhi Murmu** — built as a sports betting analytics portfolio project, 2026.
+
+> **Note:** The GitHub repository is still named `hot-hand-fader`. To rename it to `betting-the-regression`, go to **github.com → repo → Settings → Repository name**.

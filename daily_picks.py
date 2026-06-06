@@ -13,6 +13,10 @@ import pandas as pd
 from datetime import datetime, timedelta
 import os
 import time
+import re
+import json
+import difflib
+import subprocess
 
 # ==============================================================================
 # CONSTANTS & CONFIG
@@ -45,6 +49,108 @@ PREDICTIONS_FILE = "daily_predictions.csv"
 GRADED_FILE = "graded_predictions.csv"
 PERFORMANCE_FILE = "model_performance.csv"
 PERFORMANCE_BY_STAT_FILE = "model_performance_by_stat.csv"
+
+
+# ==============================================================================
+# INJURY REPORT
+# ==============================================================================
+
+def _norm_player(name):
+    """Lowercase + strip punctuation, for injury lookup keys."""
+    return re.sub(r"[^a-z0-9 ]", "", name.lower()).strip()
+
+
+def _injury_fuzzy_match(player_name, injury_report, threshold=0.75):
+    """
+    Fuzzy-match player_name against normalised keys in injury_report.
+    Returns (injury_dict, score) or (None, 0.0) if no match found.
+    """
+    t = _norm_player(player_name)
+    best_key, best_score = None, 0.0
+    for key in injury_report:
+        s = difflib.SequenceMatcher(None, t, key).ratio()
+        if s > best_score:
+            best_score, best_key = s, key
+    if best_key and best_score >= threshold:
+        return injury_report[best_key], best_score
+    return None, 0.0
+
+
+def get_injury_report():
+    """
+    Fetch current NBA injury report from ESPN's public injury API.
+
+    Returns dict:  normalised_player_name → {status, description, team, raw_name}
+        status values: 'OUT' | 'DOUBTFUL' | 'GTD' | raw uppercase string
+
+    Always fetched fresh — never cached. Prints a warning and returns {} on error.
+    """
+    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+    try:
+        result = subprocess.run(
+            ["curl", "-sk", "--max-time", "10", url],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"  ⚠️  Injury API fetch failed (curl returned {result.returncode})")
+            return {}
+        data = json.loads(result.stdout)
+    except Exception as e:
+        print(f"  ⚠️  Injury API error: {e}")
+        return {}
+
+    STATUS_MAP = {
+        "out":          "OUT",
+        "doubtful":     "DOUBTFUL",
+        "questionable": "GTD",
+        "day-to-day":   "GTD",
+        "probable":     "GTD",
+    }
+
+    report = {}
+    for team_entry in data.get("injuries", []):
+        team_name = team_entry.get("displayName", "")
+        for inj in team_entry.get("injuries", []):
+            player = inj.get("athlete", {}).get("displayName", "")
+            if not player:
+                continue
+
+            raw_status = inj.get("status", "")
+            status = STATUS_MAP.get(raw_status.lower(), raw_status.upper() or "UNKNOWN")
+
+            details = inj.get("details", {})
+            parts = [
+                p for p in [
+                    details.get("side", ""),
+                    details.get("type", ""),
+                    details.get("detail", ""),
+                ]
+                if p and p.lower() not in ("", "not specified")
+            ]
+            description = " ".join(parts) if parts else inj.get("shortComment", "")[:80]
+
+            report[_norm_player(player)] = {
+                "status":      status,
+                "description": description,
+                "team":        team_name,
+                "raw_name":    player,
+            }
+
+    return report
+
+
+def _check_returning(recent_df):
+    """
+    Return True if there's a 5+ day gap between any two consecutive games
+    in recent_df — signals a player returning from a recent absence.
+    """
+    if recent_df is None or len(recent_df) < 2:
+        return False
+    dates = sorted(recent_df["GAME_DATE"].dt.date.tolist())
+    for i in range(1, len(dates)):
+        if (dates[i] - dates[i - 1]).days >= 5:
+            return True
+    return False
 
 
 # ==============================================================================
@@ -216,7 +322,8 @@ def analyze_player(player_name, player_id, current_season, previous_season):
         "current_games": current_games,
         "baseline_used": baseline_label,
         "recent_mpg": round(recent_minutes, 1),
-        "baseline_mpg": round(baseline_minutes, 1)
+        "baseline_mpg": round(baseline_minutes, 1),
+        "returning": _check_returning(recent_df),
     }
     
     for stat in STATS_TO_CHECK:
@@ -387,21 +494,30 @@ def run_for_league(league_name, league_id, current_season, previous_season, toda
     print(f"\n{'='*70}")
     print(f"  {league_name} — {today_str}")
     print(f"{'='*70}")
-    
+
     games = get_games_for_date(today_str, league_id)
     if not games:
         print(f"  No upcoming games today.")
         return []
-    
+
     print(f"  {len(games)} game(s) tonight")
-    
+
+    # Fetch injury report once for the whole league run (always fresh)
+    print(f"  Fetching injury report from ESPN...")
+    injury_report = get_injury_report()
+    if injury_report:
+        print(f"  Injury report: {len(injury_report)} player(s) on report")
+    else:
+        print(f"  Injury report: none available (API may be down)")
+
     all_picks = []
-    
+    out_skipped = 0
+
     for game in games:
         team_ids = [game["home_team_id"], game["away_team_id"]]
         for team_id in team_ids:
             roster = get_team_roster_safe(team_id, current_season)
-            
+
             for _, player_row in roster.iterrows():
                 try:
                     result = analyze_player(
@@ -413,35 +529,75 @@ def run_for_league(league_name, league_id, current_season, previous_season, toda
                 except Exception:
                     result = None
                 time.sleep(0.4)
-                
+
                 if not result:
                     continue
                 if result["recent_mpg"] < MIN_RECENT_MPG:
                     continue
-                
+
+                player_name = result["player"]
+
+                # ── Injury check ──────────────────────────────────────────
+                inj_info, _ = _injury_fuzzy_match(player_name, injury_report)
+                inj_status  = inj_info["status"]      if inj_info else None
+                inj_desc    = inj_info["description"] if inj_info else ""
+
+                # OUT → skip entirely; don't even add to picks
+                if inj_status == "OUT":
+                    print(f"    ⛔  {player_name} — OUT ({inj_desc}) — removed from picks")
+                    out_skipped += 1
+                    continue
+
+                # Returning-from-injury signal (5+ day gap in recent log)
+                is_returning = result.get("returning", False)
+
                 for stat in STATS_TO_CHECK:
                     status = result.get(f"{stat}_status", "NORMAL")
-                    if status in ("HOT", "COLD"):
-                        all_picks.append({
-                            "date": today_str,
-                            "league": league_name,
-                            "season": current_season,
-                            "player": result["player"],
-                            "team_id": int(team_id),
-                            "current_games": result["current_games"],
-                            "baseline_used": result["baseline_used"],
-                            "stat": stat,
-                            "status": status,
-                            "tier": result[f"{stat}_tier"],
-                            "baseline_avg": result[f"{stat}_baseline"],
-                            "season_std": result[f"{stat}_std"],
-                            "recent_avg": result[f"{stat}_recent"],
-                            "z_score": result[f"{stat}_zscore"],
-                            "fair_line": result[f"{stat}_fair_line"],
-                            "bet_recommendation": result[f"{stat}_bet_rec"],
-                            "recent_mpg": result["recent_mpg"]
-                        })
-    
+                    if status not in ("HOT", "COLD"):
+                        continue
+
+                    tier = result[f"{stat}_tier"]
+
+                    # Determine injury flag for this pick
+                    injury_flag = ""
+                    injury_desc = ""
+                    if inj_status == "DOUBTFUL":
+                        injury_flag = "DOUBTFUL"
+                        injury_desc = f"⚠️ DOUBTFUL — high DNP risk ({inj_desc})" if inj_desc else "⚠️ DOUBTFUL — high DNP risk"
+                    elif inj_status == "GTD":
+                        injury_flag = "GTD"
+                        injury_desc = f"⚠️ GTD — confirm active before betting ({inj_desc})" if inj_desc else "⚠️ GTD — confirm active before betting"
+                    elif is_returning:
+                        injury_flag = "RETURNING"
+                        injury_desc = "↩️ RETURNING — first game back, demoted to WEAK"
+                        tier = "WEAK"   # demote returning players
+
+                    all_picks.append({
+                        "date":             today_str,
+                        "league":           league_name,
+                        "season":           current_season,
+                        "player":           player_name,
+                        "team_id":          int(team_id),
+                        "current_games":    result["current_games"],
+                        "baseline_used":    result["baseline_used"],
+                        "stat":             stat,
+                        "status":           status,
+                        "tier":             tier,
+                        "baseline_avg":     result[f"{stat}_baseline"],
+                        "season_std":       result[f"{stat}_std"],
+                        "recent_avg":       result[f"{stat}_recent"],
+                        "z_score":          result[f"{stat}_zscore"],
+                        "fair_line":        result[f"{stat}_fair_line"],
+                        "bet_recommendation": result[f"{stat}_bet_rec"],
+                        "recent_mpg":       result["recent_mpg"],
+                        # injury fields (dropped before CSV save)
+                        "_injury_flag":     injury_flag,
+                        "_injury_desc":     injury_desc,
+                    })
+
+    if out_skipped:
+        print(f"\n  ⛔  {out_skipped} player(s) removed — OUT on injury report")
+
     return all_picks
 
 
@@ -453,14 +609,17 @@ def print_full_pick(pick):
     print(f"      Source: {pick['baseline_used']} | MPG: {pick['recent_mpg']}")
     print(f"      📊 FAIR LINE: {pick['fair_line']}")
     print(f"      💰 ACTION: {pick['bet_recommendation']}")
+    if pick.get("_injury_flag"):
+        print(f"      {pick['_injury_desc']}")
     print()
 
 
 def print_summary_pick(pick):
     """Print a single pick in summary form (one line, for WEAK tier)."""
     icon = "🔥" if pick["status"] == "HOT" else "❄️"
+    inj = f"  {pick['_injury_desc']}" if pick.get("_injury_flag") else ""
     print(f"  {icon} {pick['player']} ({pick['stat']}) z={pick['z_score']} | "
-          f"fair {pick['fair_line']} | {pick['bet_recommendation']}")
+          f"fair {pick['fair_line']} | {pick['bet_recommendation']}{inj}")
 
 
 def main():
@@ -521,12 +680,14 @@ def main():
     picks_df["tier_rank"] = picks_df["tier"].map(tier_order)
     picks_df = picks_df.sort_values(["tier_rank", "abs_z"], ascending=[True, False])
     
-    # Save
+    # Save — drop internal sort keys and injury fields (ephemeral, fetched fresh each run)
+    drop_cols = ["abs_z", "tier_rank", "_injury_flag", "_injury_desc"]
+    save_cols = [c for c in drop_cols if c in picks_df.columns]
     if os.path.exists(PREDICTIONS_FILE):
         existing = pd.read_csv(PREDICTIONS_FILE)
-        save_df = pd.concat([existing, picks_df.drop(columns=["abs_z", "tier_rank"])], ignore_index=True)
+        save_df = pd.concat([existing, picks_df.drop(columns=save_cols)], ignore_index=True)
     else:
-        save_df = picks_df.drop(columns=["abs_z", "tier_rank"])
+        save_df = picks_df.drop(columns=save_cols)
     save_df.to_csv(PREDICTIONS_FILE, index=False)
     
     print(f"\n{'='*70}")

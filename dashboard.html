@@ -231,6 +231,26 @@ input[type=number]{width:82px}
 .pn{color:var(--bet-under);font-weight:700}
 .empty{text-align:center;color:var(--text-3);font-size:13px;padding:24px}
 
+/* ── Injury section ── */
+.inj-sec{background:var(--bg-card);border:1px solid var(--border);
+         border-radius:var(--r-lg);padding:14px 18px;margin-bottom:20px}
+.inj-tbl{width:100%;border-collapse:collapse;margin-top:6px}
+.inj-tbl th{font-size:10px;text-transform:uppercase;letter-spacing:.4px;
+            color:var(--text-2);text-align:left;padding:5px 8px;
+            border-bottom:1px solid var(--border)}
+.inj-tbl td{font-size:12px;padding:7px 8px;border-bottom:1px solid var(--border)}
+.inj-none{font-size:12px;color:var(--text-3);padding:4px 0}
+/* Injury status badges (shared by section table and pick cards) */
+.ib{font-size:10px;font-weight:800;padding:2px 6px;border-radius:4px;white-space:nowrap}
+.ib-OUT      {background:#fee2e2;color:#991b1b}
+.ib-DOUBTFUL {background:#fef3c7;color:#92400e}
+.ib-GTD      {background:#fef9c3;color:#713f12}
+.ib-RETURNING{background:#dbeafe;color:#1e40af}
+/* Pick-card injury flag */
+.pick-inj{font-size:11px;margin-top:5px;padding:3px 8px;
+          border-radius:4px;display:inline-block;font-weight:600}
+.pick.inj-out{border-left-color:#991b1b!important;opacity:.55}
+
 /* Responsive */
 @media(max-width:600px){
   .metrics,.pstats{grid-template-columns:repeat(2,1fr)}
@@ -277,6 +297,9 @@ input[type=number]{width:82px}
       <span class="rbadge" id="g-round"></span>
     </div>
   </div>
+
+  <!-- Injury report (rendered by JS from INJURIES data) -->
+  <div id="inj-root"></div>
 
   <!-- Metric cards -->
   <div class="metrics">
@@ -337,9 +360,10 @@ input[type=number]{width:82px}
 
 <script>
 // ── Data injected by Python ─────────────────────────────────────────────────
-const PICKS       = [{"player": "Landry Shamet", "team": "New York Knicks", "stat": "PRA", "status": "HOT", "tier": "STRONG", "fair_line": 7.6, "dk_line": 9.5, "gap": 1.9, "z_score": 1.32, "bet_recommendation": "bet UNDER if line > 11.0", "recent_avg": 16.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 11.0, "threshold_met": false, "direction": "UNDER"}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "FG3M", "status": "HOT", "tier": "STRONG", "fair_line": 1.6, "dk_line": 1.5, "gap": -0.1, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 2.4", "recent_avg": 3.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 2.4, "threshold_met": false, "direction": "UNDER"}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "PTS", "status": "HOT", "tier": "STRONG", "fair_line": 6.2, "dk_line": 7.5, "gap": 1.3, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 9.3", "recent_avg": 14.33, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 9.3, "threshold_met": false, "direction": "UNDER"}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PRA", "status": "COLD", "tier": "MODERATE", "fair_line": 25.76, "dk_line": 24.5, "gap": 1.26, "z_score": -1.18, "bet_recommendation": "bet OVER if line < 22.3", "recent_avg": 17.67, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 22.3, "threshold_met": false, "direction": "OVER"}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PTS", "status": "COLD", "tier": "MODERATE", "fair_line": 15.88, "dk_line": 15.5, "gap": 0.38, "z_score": -1.15, "bet_recommendation": "bet OVER if line < 12.9", "recent_avg": 9.0, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 12.9, "threshold_met": false, "direction": "OVER"}, {"player": "Mikal Bridges", "team": "New York Knicks", "stat": "FG3M", "status": "COLD", "tier": "MODERATE", "fair_line": 1.9, "dk_line": 1.5, "gap": 0.4, "z_score": -1.08, "bet_recommendation": "bet OVER if line < 1.2", "recent_avg": 0.33, "recent_mpg": 32.3, "baseline_games": 82, "threshold": 1.2, "threshold_met": false, "direction": "OVER"}, {"player": "Stephon Castle", "team": "San Antonio Spurs", "stat": "FG3M", "status": "COLD", "tier": "WEAK", "fair_line": 1.58, "dk_line": 1.5, "gap": 0.08, "z_score": -0.93, "bet_recommendation": "bet OVER if line < 0.9", "recent_avg": 0.33, "recent_mpg": 34.0, "baseline_games": 19, "threshold": 0.9, "threshold_met": false, "direction": "OVER"}];
+const PICKS       = [{"player": "Landry Shamet", "team": "New York Knicks", "stat": "PRA", "status": "HOT", "tier": "STRONG", "fair_line": 7.6, "dk_line": 9.5, "gap": 1.9, "z_score": 1.32, "bet_recommendation": "bet UNDER if line > 11.0", "recent_avg": 16.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 11.0, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": ""}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "FG3M", "status": "HOT", "tier": "STRONG", "fair_line": 1.6, "dk_line": 1.5, "gap": -0.1, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 2.4", "recent_avg": 3.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 2.4, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": ""}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "PTS", "status": "HOT", "tier": "STRONG", "fair_line": 6.2, "dk_line": 7.5, "gap": 1.3, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 9.3", "recent_avg": 14.33, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 9.3, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": ""}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PRA", "status": "COLD", "tier": "MODERATE", "fair_line": 25.76, "dk_line": 24.5, "gap": 1.26, "z_score": -1.18, "bet_recommendation": "bet OVER if line < 22.3", "recent_avg": 17.67, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 22.3, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": ""}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PTS", "status": "COLD", "tier": "MODERATE", "fair_line": 15.88, "dk_line": 15.5, "gap": 0.38, "z_score": -1.15, "bet_recommendation": "bet OVER if line < 12.9", "recent_avg": 9.0, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 12.9, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": ""}, {"player": "Mikal Bridges", "team": "New York Knicks", "stat": "FG3M", "status": "COLD", "tier": "MODERATE", "fair_line": 1.9, "dk_line": 1.5, "gap": 0.4, "z_score": -1.08, "bet_recommendation": "bet OVER if line < 1.2", "recent_avg": 0.33, "recent_mpg": 32.3, "baseline_games": 82, "threshold": 1.2, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": ""}, {"player": "Stephon Castle", "team": "San Antonio Spurs", "stat": "FG3M", "status": "COLD", "tier": "WEAK", "fair_line": 1.58, "dk_line": 1.5, "gap": 0.08, "z_score": -0.93, "bet_recommendation": "bet OVER if line < 0.9", "recent_avg": 0.33, "recent_mpg": 34.0, "baseline_games": 19, "threshold": 0.9, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": ""}];
 const GAME_INFO   = {"home_team": "San Antonio Spurs", "away_team": "New York Knicks", "start_time_et": "8:30 PM ET", "venue": "Frost Bank Center, San Antonio", "series_record": "NBA Finals - Game 2", "round_label": "NBA Finals"};
 const MODEL_RECORD= null;
+const INJURIES    = [{"player": "David Jones Garcia", "team": "San Antonio Spurs", "status": "OUT", "description": "Right Ankle Surgery"}];
 
 // ── State (persisted in localStorage) ──────────────────────────────────────
 let state = {
@@ -394,6 +418,36 @@ function esc(s) {
     .replace(/'/g,'&#39;');
 }
 
+// ── Injury section ──────────────────────────────────────────────────────────
+function renderInjuries() {
+  const root = document.getElementById('inj-root');
+  if (!INJURIES || !INJURIES.length) { root.innerHTML = ''; return; }
+
+  const statusOrder = {OUT:0, DOUBTFUL:1, GTD:2, RETURNING:3};
+  const sorted = [...INJURIES].sort((a,b)=>
+    (statusOrder[a.status]??9) - (statusOrder[b.status]??9)
+  );
+
+  const rows = sorted.map(inj => `
+    <tr>
+      <td><strong>${esc(inj.player)}</strong></td>
+      <td style="color:var(--text-2)">${esc(inj.team)}</td>
+      <td><span class="ib ib-${esc(inj.status)}">${esc(inj.status)}</span></td>
+      <td style="color:var(--text-2)">${esc(inj.description)}</td>
+    </tr>`).join('');
+
+  root.innerHTML = `
+    <div class="sec-hdr">Injury report &mdash; tonight&#39;s teams</div>
+    <div class="inj-sec">
+      <table class="inj-tbl">
+        <thead><tr>
+          <th>Player</th><th>Team</th><th>Status</th><th>Injury</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 // ── Picks rendering ─────────────────────────────────────────────────────────
 const TIER_ORDER = {STRONG:0, MODERATE:1, WEAK:2};
 
@@ -435,14 +489,32 @@ function renderPicks() {
 }
 
 function pickCard(p, idx) {
-  const isHot   = p.status === 'HOT';
-  const hasGap  = p.gap > 0;
-  const cls     = hasGap ? (isHot?'hot':'cold') : 'dim';
+  const isHot      = p.status === 'HOT';
+  const hasGap     = p.gap > 0;
+  const injFlag    = p.injury_flag || '';
+  const isOut      = injFlag === 'OUT';
   const streakIcon = isHot ? '&#128293;' : '&#10052;&#65039;';  // 🔥 ❄️
+
+  // Card class — OUT gets its own red border + dim style
+  const cls = isOut
+    ? 'dim inj-out'
+    : (hasGap ? (isHot?'hot':'cold') : 'dim');
+
+  // Injury flag badge shown below player info (non-OUT)
+  let injHtml = '';
+  if (injFlag && !isOut) {
+    const icons = {DOUBTFUL:'&#9888;&#65039;', GTD:'&#9888;&#65039;', RETURNING:'&#8629;'};
+    const icon  = icons[injFlag] || '&#9888;&#65039;';
+    const desc  = p.injury_desc || injFlag;
+    injHtml = `<div class="pick-inj ib-${injFlag}">${icon} ${esc(desc)}</div>`;
+  }
 
   // Action button
   let actionHtml = '', watchSub = '';
-  if (p.threshold_met) {
+  if (isOut) {
+    // OUT: skip button, no paper trading
+    actionHtml = `<span class="abtn no-edge" style="color:#991b1b;font-weight:700">&#9940; Skip &mdash; OUT</span>`;
+  } else if (p.threshold_met) {
     const bc    = isHot ? 'under' : 'over';
     const label = isHot ? 'BET UNDER' : 'BET OVER';
     actionHtml = `<button class="abtn ${bc}" onclick="addToPaper(${idx})">${label}</button>`;
@@ -482,6 +554,7 @@ function pickCard(p, idx) {
       ${watchSub}
     </div>
   </div>
+  ${injHtml}
   <div class="pmeta">
     <span>${esc(p.team)}</span>
     <span>${streakIcon} ${isHot?'Hot':'Cold'} streak &middot; last 3 avg: ${p.recent_avg}</span>
@@ -713,6 +786,7 @@ function renderAll() {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadState();
+renderInjuries();
 renderPicks();
 buildDropdown();
 renderAll();

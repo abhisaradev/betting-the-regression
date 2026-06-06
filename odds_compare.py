@@ -98,6 +98,83 @@ def _curl_json(url):
         raise RuntimeError(f"JSON parse error for {url}: {e}\nBody: {result.stdout[:200]}")
 
 
+def fetch_injury_report(home_team_name, away_team_name):
+    """
+    Fetch the ESPN NBA injury report and filter to tonight's two teams.
+
+    Returns:
+        pick_lookup  — dict  normalised_player_name → {status, description, team}
+                       for fuzzy-matching against our picks.
+        all_injuries — list[dict]  every injured player from both teams,
+                       for the standalone dashboard section.
+    Status values: 'OUT' | 'DOUBTFUL' | 'GTD' | raw uppercase.
+    Always fetched fresh — never cached.
+    """
+    url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
+    try:
+        data = _curl_json(url)
+    except Exception as e:
+        print(f"  ⚠️  Injury API error: {e}")
+        return {}, []
+
+    STATUS_MAP = {
+        "out":          "OUT",
+        "doubtful":     "DOUBTFUL",
+        "questionable": "GTD",
+        "day-to-day":   "GTD",
+        "probable":     "GTD",
+    }
+
+    # Normalise tonight's team names for fuzzy comparison
+    targets = [home_team_name.lower(), away_team_name.lower()]
+
+    pick_lookup  = {}   # normalised_player → {status, desc, team}
+    all_injuries = []   # [{player, team, status, description}]
+
+    for team_entry in data.get("injuries", []):
+        team_display = team_entry.get("displayName", "")
+        is_playing = any(
+            difflib.SequenceMatcher(None, t, team_display.lower()).ratio() > 0.75
+            for t in targets
+        )
+        if not is_playing:
+            continue
+
+        for inj in team_entry.get("injuries", []):
+            player = inj.get("athlete", {}).get("displayName", "")
+            if not player:
+                continue
+
+            raw_status = inj.get("status", "")
+            status = STATUS_MAP.get(raw_status.lower(), raw_status.upper() or "UNKNOWN")
+
+            details = inj.get("details", {})
+            parts = [
+                p for p in [
+                    details.get("side", ""),
+                    details.get("type", ""),
+                    details.get("detail", ""),
+                ]
+                if p and p.lower() not in ("", "not specified")
+            ]
+            description = " ".join(parts) if parts else inj.get("shortComment", "")[:80]
+
+            norm = normalise_name(player)
+            pick_lookup[norm] = {
+                "status":      status,
+                "description": description,
+                "team":        team_display,
+            }
+            all_injuries.append({
+                "player":      player,
+                "team":        team_display,
+                "status":      status,
+                "description": description,
+            })
+
+    return pick_lookup, all_injuries
+
+
 def find_nba_event(date_str):
     """
     Find tonight's NBA event on ESPN.
@@ -315,21 +392,24 @@ def print_edge_row(row):
 # DASHBOARD GENERATION
 # ==============================================================================
 
-def generate_dashboard(picks, game_info, date_str, model_record=None):
+def generate_dashboard(picks, game_info, date_str, model_record=None, all_injuries=None):
     """
     Write dashboard.html and open it in the default browser.
 
-    picks       — list of dicts with player/team/stat/status/tier/fair_line/
-                  dk_line/gap/z_score/bet_recommendation/recent_avg/recent_mpg/
-                  baseline_games/threshold/threshold_met/direction
-    game_info   — dict with home_team/away_team/start_time_et/venue/
-                  series_record/round_label
-    date_str    — "2026-06-06"
-    model_record— {"wins": N, "losses": M} or None
+    picks        — list of dicts with player/team/stat/status/tier/fair_line/
+                   dk_line/gap/z_score/bet_recommendation/recent_avg/recent_mpg/
+                   baseline_games/threshold/threshold_met/direction/
+                   injury_flag/injury_desc
+    game_info    — dict with home_team/away_team/start_time_et/venue/
+                   series_record/round_label
+    date_str     — "2026-06-06"
+    model_record — {"wins": N, "losses": M} or None
+    all_injuries — list[{player, team, status, description}] for injury section
     """
-    picks_json  = json.dumps(picks,        ensure_ascii=False)
-    game_json   = json.dumps(game_info,    ensure_ascii=False)
-    record_json = json.dumps(model_record, ensure_ascii=False)
+    picks_json    = json.dumps(picks,               ensure_ascii=False)
+    game_json     = json.dumps(game_info,           ensure_ascii=False)
+    record_json   = json.dumps(model_record,        ensure_ascii=False)
+    injuries_json = json.dumps(all_injuries or [],  ensure_ascii=False)
     fixture     = f"{game_info.get('away_team','')} @ {game_info.get('home_team','')}"
 
     # ------------------------------------------------------------------
@@ -568,6 +648,26 @@ input[type=number]{width:82px}
 .pn{color:var(--bet-under);font-weight:700}
 .empty{text-align:center;color:var(--text-3);font-size:13px;padding:24px}
 
+/* ── Injury section ── */
+.inj-sec{background:var(--bg-card);border:1px solid var(--border);
+         border-radius:var(--r-lg);padding:14px 18px;margin-bottom:20px}
+.inj-tbl{width:100%;border-collapse:collapse;margin-top:6px}
+.inj-tbl th{font-size:10px;text-transform:uppercase;letter-spacing:.4px;
+            color:var(--text-2);text-align:left;padding:5px 8px;
+            border-bottom:1px solid var(--border)}
+.inj-tbl td{font-size:12px;padding:7px 8px;border-bottom:1px solid var(--border)}
+.inj-none{font-size:12px;color:var(--text-3);padding:4px 0}
+/* Injury status badges (shared by section table and pick cards) */
+.ib{font-size:10px;font-weight:800;padding:2px 6px;border-radius:4px;white-space:nowrap}
+.ib-OUT      {background:#fee2e2;color:#991b1b}
+.ib-DOUBTFUL {background:#fef3c7;color:#92400e}
+.ib-GTD      {background:#fef9c3;color:#713f12}
+.ib-RETURNING{background:#dbeafe;color:#1e40af}
+/* Pick-card injury flag */
+.pick-inj{font-size:11px;margin-top:5px;padding:3px 8px;
+          border-radius:4px;display:inline-block;font-weight:600}
+.pick.inj-out{border-left-color:#991b1b!important;opacity:.55}
+
 /* Responsive */
 @media(max-width:600px){
   .metrics,.pstats{grid-template-columns:repeat(2,1fr)}
@@ -614,6 +714,9 @@ input[type=number]{width:82px}
       <span class="rbadge" id="g-round"></span>
     </div>
   </div>
+
+  <!-- Injury report (rendered by JS from INJURIES data) -->
+  <div id="inj-root"></div>
 
   <!-- Metric cards -->
   <div class="metrics">
@@ -677,6 +780,7 @@ input[type=number]{width:82px}
 const PICKS       = __PICKS_JSON__;
 const GAME_INFO   = __GAME_JSON__;
 const MODEL_RECORD= __RECORD_JSON__;
+const INJURIES    = __INJURIES_JSON__;
 
 // ── State (persisted in localStorage) ──────────────────────────────────────
 let state = {
@@ -731,6 +835,36 @@ function esc(s) {
     .replace(/'/g,'&#39;');
 }
 
+// ── Injury section ──────────────────────────────────────────────────────────
+function renderInjuries() {
+  const root = document.getElementById('inj-root');
+  if (!INJURIES || !INJURIES.length) { root.innerHTML = ''; return; }
+
+  const statusOrder = {OUT:0, DOUBTFUL:1, GTD:2, RETURNING:3};
+  const sorted = [...INJURIES].sort((a,b)=>
+    (statusOrder[a.status]??9) - (statusOrder[b.status]??9)
+  );
+
+  const rows = sorted.map(inj => `
+    <tr>
+      <td><strong>${esc(inj.player)}</strong></td>
+      <td style="color:var(--text-2)">${esc(inj.team)}</td>
+      <td><span class="ib ib-${esc(inj.status)}">${esc(inj.status)}</span></td>
+      <td style="color:var(--text-2)">${esc(inj.description)}</td>
+    </tr>`).join('');
+
+  root.innerHTML = `
+    <div class="sec-hdr">Injury report &mdash; tonight&#39;s teams</div>
+    <div class="inj-sec">
+      <table class="inj-tbl">
+        <thead><tr>
+          <th>Player</th><th>Team</th><th>Status</th><th>Injury</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 // ── Picks rendering ─────────────────────────────────────────────────────────
 const TIER_ORDER = {STRONG:0, MODERATE:1, WEAK:2};
 
@@ -772,14 +906,32 @@ function renderPicks() {
 }
 
 function pickCard(p, idx) {
-  const isHot   = p.status === 'HOT';
-  const hasGap  = p.gap > 0;
-  const cls     = hasGap ? (isHot?'hot':'cold') : 'dim';
+  const isHot      = p.status === 'HOT';
+  const hasGap     = p.gap > 0;
+  const injFlag    = p.injury_flag || '';
+  const isOut      = injFlag === 'OUT';
   const streakIcon = isHot ? '&#128293;' : '&#10052;&#65039;';  // 🔥 ❄️
+
+  // Card class — OUT gets its own red border + dim style
+  const cls = isOut
+    ? 'dim inj-out'
+    : (hasGap ? (isHot?'hot':'cold') : 'dim');
+
+  // Injury flag badge shown below player info (non-OUT)
+  let injHtml = '';
+  if (injFlag && !isOut) {
+    const icons = {DOUBTFUL:'&#9888;&#65039;', GTD:'&#9888;&#65039;', RETURNING:'&#8629;'};
+    const icon  = icons[injFlag] || '&#9888;&#65039;';
+    const desc  = p.injury_desc || injFlag;
+    injHtml = `<div class="pick-inj ib-${injFlag}">${icon} ${esc(desc)}</div>`;
+  }
 
   // Action button
   let actionHtml = '', watchSub = '';
-  if (p.threshold_met) {
+  if (isOut) {
+    // OUT: skip button, no paper trading
+    actionHtml = `<span class="abtn no-edge" style="color:#991b1b;font-weight:700">&#9940; Skip &mdash; OUT</span>`;
+  } else if (p.threshold_met) {
     const bc    = isHot ? 'under' : 'over';
     const label = isHot ? 'BET UNDER' : 'BET OVER';
     actionHtml = `<button class="abtn ${bc}" onclick="addToPaper(${idx})">${label}</button>`;
@@ -819,6 +971,7 @@ function pickCard(p, idx) {
       ${watchSub}
     </div>
   </div>
+  ${injHtml}
   <div class="pmeta">
     <span>${esc(p.team)}</span>
     <span>${streakIcon} ${isHot?'Hot':'Cold'} streak &middot; last 3 avg: ${p.recent_avg}</span>
@@ -1050,6 +1203,7 @@ function renderAll() {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadState();
+renderInjuries();
 renderPicks();
 buildDropdown();
 renderAll();
@@ -1059,11 +1213,12 @@ renderAll();
 """
 
     # Inject Python-computed values into the template
-    html = html.replace("__PICKS_JSON__",  picks_json)
-    html = html.replace("__GAME_JSON__",   game_json)
-    html = html.replace("__RECORD_JSON__", record_json)
-    html = html.replace("__DATE__",        date_str)
-    html = html.replace("__FIXTURE__",     fixture)
+    html = html.replace("__PICKS_JSON__",    picks_json)
+    html = html.replace("__GAME_JSON__",     game_json)
+    html = html.replace("__RECORD_JSON__",   record_json)
+    html = html.replace("__INJURIES_JSON__", injuries_json)
+    html = html.replace("__DATE__",          date_str)
+    html = html.replace("__FIXTURE__",       fixture)
 
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as fh:
         fh.write(html)
@@ -1258,7 +1413,19 @@ def main():
     print()
 
     # ------------------------------------------------------------------
-    # 9. Build enriched picks for dashboard
+    # 9. Fetch injury report for tonight's teams (always fresh)
+    # ------------------------------------------------------------------
+    print(f"\n  Fetching injury report for {fixture_label}...")
+    pick_lookup, all_injuries = fetch_injury_report(home, away)
+    if all_injuries:
+        print(f"  {len(all_injuries)} player(s) on injury report:")
+        for inj in all_injuries:
+            print(f"    {inj['status']:9}  {inj['player']} ({inj['team']}) — {inj['description']}")
+    else:
+        print(f"  No injuries reported for tonight's teams.")
+
+    # ------------------------------------------------------------------
+    # 10. Build enriched picks for dashboard (with injury annotations)
     # ------------------------------------------------------------------
     picks_for_dash = []
     for r in results:
@@ -1274,27 +1441,52 @@ def main():
         direction      = "UNDER" if r["status"] == "HOT" else "OVER"
         thresh         = parse_threshold(r["bet_recommendation"])
 
+        # Fuzzy-match player against injury lookup
+        norm_player = normalise_name(r["player"])
+        inj_info    = None
+        best_score  = 0.0
+        for key, val in pick_lookup.items():
+            s = difflib.SequenceMatcher(None, norm_player, key).ratio()
+            if s > best_score:
+                best_score, inj_info = s, val
+        if best_score < 0.75:
+            inj_info = None
+
+        injury_flag = ""
+        injury_desc = ""
+        if inj_info:
+            injury_flag = inj_info["status"]
+            desc_raw    = inj_info["description"]
+            if injury_flag == "OUT":
+                injury_desc = f"OUT — {desc_raw}" if desc_raw else "OUT"
+            elif injury_flag == "DOUBTFUL":
+                injury_desc = f"DOUBTFUL — high DNP risk ({desc_raw})" if desc_raw else "DOUBTFUL — high DNP risk"
+            elif injury_flag == "GTD":
+                injury_desc = f"GTD — confirm active before betting ({desc_raw})" if desc_raw else "GTD — confirm active"
+
         picks_for_dash.append({
-            "player":           r["player"],
-            "team":             team_name,
-            "stat":             r["stat"],
-            "status":           r["status"],
-            "tier":             r["tier"],
-            "fair_line":        r["fair_line"],
-            "dk_line":          r["bookmaker_line"],
-            "gap":              r["gap"],
-            "z_score":          round(float(row["z_score"]), 2),
+            "player":             r["player"],
+            "team":               team_name,
+            "stat":               r["stat"],
+            "status":             r["status"],
+            "tier":               r["tier"],
+            "fair_line":          r["fair_line"],
+            "dk_line":            r["bookmaker_line"],
+            "gap":                r["gap"],
+            "z_score":            round(float(row["z_score"]), 2),
             "bet_recommendation": r["bet_recommendation"],
-            "recent_avg":       round(float(row["recent_avg"]), 2),
-            "recent_mpg":       round(float(row["recent_mpg"]), 1),
-            "baseline_games":   baseline_games,
-            "threshold":        thresh,
-            "threshold_met":    bool(r["threshold_met"]),
-            "direction":        direction,
+            "recent_avg":         round(float(row["recent_avg"]), 2),
+            "recent_mpg":         round(float(row["recent_mpg"]), 1),
+            "baseline_games":     baseline_games,
+            "threshold":          thresh,
+            "threshold_met":      bool(r["threshold_met"]),
+            "direction":          direction,
+            "injury_flag":        injury_flag,
+            "injury_desc":        injury_desc,
         })
 
     # ------------------------------------------------------------------
-    # 10. Game metadata for dashboard
+    # 11. Game metadata for dashboard
     # ------------------------------------------------------------------
     print("  Fetching game metadata for dashboard...")
     game_info = fetch_game_info(event_id, home, away)
@@ -1306,7 +1498,7 @@ def main():
         print(f"    Series:  {game_info['series_record']}")
 
     # ------------------------------------------------------------------
-    # 11. Model record (if available)
+    # 12. Model record (if available)
     # ------------------------------------------------------------------
     model_record = None
     if os.path.exists(PERFORMANCE_FILE):
@@ -1321,9 +1513,10 @@ def main():
             pass
 
     # ------------------------------------------------------------------
-    # 12. Generate dashboard & open browser
+    # 13. Generate dashboard & open browser
     # ------------------------------------------------------------------
-    generate_dashboard(picks_for_dash, game_info, pred_date, model_record)
+    generate_dashboard(picks_for_dash, game_info, pred_date, model_record,
+                       all_injuries=all_injuries)
 
 
 if __name__ == "__main__":

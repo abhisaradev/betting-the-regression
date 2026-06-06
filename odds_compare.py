@@ -1,9 +1,20 @@
 """
 odds_compare.py — Compare Hot Hand Fader fair lines vs live bookmaker props.
-Pulls tonight's NBA player prop lines from OddsPapi, matches them against
-flagged players in daily_predictions.csv, and ranks edges by gap size.
+Pulls tonight's NBA player prop lines and matches them against flagged players
+in daily_predictions.csv, ranking edges by gap size.
 
-Setup:  export ODDSPAPI_KEY=<your_key>   (already in ~/.zshrc)
+Data source: OddsPapi (oddspapi.io) — free tier covers pre-game game markets.
+NOTE: OddsPapi free tier does NOT provide NBA player prop data (confirmed via
+live API testing — all player_id values are "0", indicating team/game markets
+only). Player props require a paid OddsPapi plan or a different provider.
+
+Recommended free alternative for player props: The Odds API (the-odds-api.com)
+Set ODDS_PROVIDER = "theoddsapi" below and add THE_ODDS_API_KEY to ~/.zshrc
+to switch providers without changing any other code.
+
+Setup:
+  export ODDSPAPI_KEY=<your_key>       # already in ~/.zshrc
+  export THE_ODDS_API_KEY=<your_key>   # get free key at the-odds-api.com
 Run after daily_picks.py:  python3.11 odds_compare.py
 """
 
@@ -17,17 +28,35 @@ import pandas as pd
 from datetime import datetime
 
 # ==============================================================================
-# CONFIG
+# CONFIG — change ODDS_PROVIDER to switch data sources
 # ==============================================================================
 
-API_KEY  = os.environ.get("ODDSPAPI_KEY", "")
-BASE_URL = "https://api.oddspapi.io/v4"
+# "oddspapi"   — uses OddsPapi (free tier: game markets only, no player props)
+# "theoddsapi" — uses The Odds API (free tier: full NBA player props, 500 req/mo)
+ODDS_PROVIDER = "theoddsapi"
 
-# Bookmakers with best NBA player prop coverage on OddsPapi free tier
-BOOKMAKERS = "fanduel,hardrockbet,thescore,betrivers"
+ODDSPAPI_KEY     = os.environ.get("ODDSPAPI_KEY", "")
+THE_ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "")
 
-# Exact OddsPapi market name strings (confirmed from /markets catalog)
-STAT_TO_MARKET_NAME = {
+ODDSPAPI_BASE    = "https://api.oddspapi.io/v4"
+THEODDSAPI_BASE  = "https://api.the-odds-api.com/v4"
+
+# OddsPapi: bookmakers to query
+ODDSPAPI_BOOKMAKERS = "fanduel,hardrockbet,thescore,betrivers"
+
+# The Odds API: regions and bookmakers
+THEODDSAPI_REGIONS    = "us"
+THEODDSAPI_BOOKMAKERS = "fanduel,betrivers,draftkings,betmgm"
+
+# The Odds API market keys for our three stats
+THEODDSAPI_MARKETS = {
+    "PTS":  "player_points",
+    "FG3M": "player_threes",
+    "PRA":  "player_points_rebounds_assists",
+}
+
+# OddsPapi exact market name strings (confirmed from /markets catalog)
+ODDSPAPI_STAT_TO_MARKET = {
     "PTS":  "Over Under Player Points (incl. overtime)",
     "FG3M": "Over Under Player 3 Point FG (incl. overtime)",
     "PRA":  "Over Under Player Points + Assists + Rebounds (incl. overtime)",
@@ -37,95 +66,166 @@ STAT_TO_MARKET_NAME = {
 NAME_MATCH_THRESHOLD = 0.75
 
 PREDICTIONS_FILE = "daily_predictions.csv"
-TODAY = datetime.now().strftime("%Y-%m-%d")
-OUTPUT_FILE = f"odds_comparison_{TODAY}.csv"
+TODAY            = datetime.now().strftime("%Y-%m-%d")
+OUTPUT_FILE      = f"odds_comparison_{TODAY}.csv"
 
 
 # ==============================================================================
-# API HELPERS
+# SHARED API HELPER
 # ==============================================================================
 
-def api_get(endpoint, **params):
+def http_get(url, params, provider_label):
     """
-    GET to OddsPapi, injecting API key.
-    Retries up to 3 times with exponential backoff on 429 (rate limit).
+    GET request with retry on 429 (rate limit).
+    On 403, prints the full error body and raises — caller decides how to handle.
     """
-    if not API_KEY:
-        print("\n❌  ODDSPAPI_KEY environment variable not set.")
-        print("    Add to ~/.zshrc:  export ODDSPAPI_KEY=<your_key>")
-        print("    Then run:         source ~/.zshrc")
-        sys.exit(1)
-    params["apiKey"] = API_KEY
-    url = f"{BASE_URL}/{endpoint}"
     for attempt in range(3):
         resp = requests.get(url, params=params, timeout=15)
         if resp.status_code == 429:
-            wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
-            print(f"  ⏳ Rate limited — waiting {wait}s before retry...")
+            wait = 5 * (2 ** attempt)
+            print(f"  ⏳ [{provider_label}] Rate limited — waiting {wait}s...")
             time.sleep(wait)
             continue
+        if resp.status_code == 403:
+            print(f"\n  ❌ 403 Forbidden from {provider_label}:")
+            print(f"     {resp.text[:400]}")
+            resp.raise_for_status()
         resp.raise_for_status()
         return resp.json()
-    resp.raise_for_status()  # re-raise after all retries exhausted
+    resp.raise_for_status()
 
 
-def build_market_catalog():
-    """
-    Fetch the global /markets catalog and return:
-      market_id (str) -> {"name": str, "handicap": float}
+# ==============================================================================
+# ODDSPAPI PROVIDER
+# ==============================================================================
 
-    OddsPapi uses one market ID per (stat_type, handicap_line) combination.
-    E.g., market 111698 = "Over Under Player Points (incl. overtime)" at 15.5.
-    """
-    print("  Building market catalog (stat names → IDs)...", end="", flush=True)
-    data = api_get("markets")
+def oddspapi_get(endpoint, **params):
+    if not ODDSPAPI_KEY:
+        print("❌  ODDSPAPI_KEY not set in environment.")
+        sys.exit(1)
+    params["apiKey"] = ODDSPAPI_KEY
+    return http_get(f"{ODDSPAPI_BASE}/{endpoint}", params, "OddsPapi")
+
+
+def oddspapi_build_market_catalog():
+    """Return market_id -> {name, handicap} for our three stat types."""
+    print("  Building OddsPapi market catalog...", end="", flush=True)
+    data = oddspapi_get("markets")
+    relevant = set(ODDSPAPI_STAT_TO_MARKET.values())
     catalog = {}
-    relevant_names = set(STAT_TO_MARKET_NAME.values())
     for m in data:
         name = m.get("marketName", "")
-        if name in relevant_names:
+        if name in relevant:
             mid = str(m.get("marketId", ""))
-            handicap = m.get("handicap")
-            if mid and handicap is not None:
-                catalog[mid] = {"name": name, "handicap": float(handicap)}
-    print(f" {len(catalog)} relevant markets loaded.")
+            h   = m.get("handicap")
+            if mid and h is not None:
+                catalog[mid] = {"name": name, "handicap": float(h)}
+    print(f" {len(catalog)} markets.")
     return catalog
 
 
-def find_nba_fixture(date_str):
-    """
-    Search OddsPapi /fixtures for the NBA game on date_str.
-    Returns the fixture dict with hasOdds=True, or None.
-    NBA tip-offs are evening ET → early UTC next day, so we search today+1.
-    """
+def oddspapi_find_fixture(date_str):
+    """Find the NBA fixture for date_str (searches ±2 days for UTC boundary)."""
     import datetime as dt
-    base = dt.datetime.strptime(date_str, "%Y-%m-%d")
+    base      = dt.datetime.strptime(date_str, "%Y-%m-%d")
     from_date = (base - dt.timedelta(days=1)).strftime("%Y-%m-%d")
-    # +2 days: NBA tip-offs are evening ET (00:30+ UTC next day), so we need
-    # to include the following calendar day in UTC.
     to_date   = (base + dt.timedelta(days=2)).strftime("%Y-%m-%d")
-
-    data = api_get("fixtures", sportId=11, **{"from": from_date, "to": to_date})
-    nba = [f for f in data
-           if f.get("tournamentName") == "NBA" and f.get("hasOdds")]
+    data = oddspapi_get("fixtures", sportId=11, **{"from": from_date, "to": to_date})
+    nba = [f for f in data if f.get("tournamentName") == "NBA" and f.get("hasOdds")]
     return nba[0] if nba else None
 
 
-def fetch_odds(fixture_id):
-    """Return the raw bookmakerOdds dict for a fixture."""
-    data = api_get("odds", fixtureId=fixture_id, bookmakers=BOOKMAKERS)
-    return data.get("bookmakerOdds", {})
-
-
-# ==============================================================================
-# PLAYER NAME NORMALISATION & FUZZY MATCHING
-# ==============================================================================
-
-def normalise_oddspapi_name(raw):
+def oddspapi_fetch_odds(fixture_id, fixture_status):
     """
-    OddsPapi player names are "Last, First" (e.g., "Fox, De'Aaron").
-    Convert to "First Last" for comparison against our predictions.
+    Fetch odds for a fixture.
+    If game is live (RESTRICTED_ACCESS), fall back to /historical-odds.
+    Returns (bookmaker_odds_dict, source_label).
     """
+    try:
+        data = oddspapi_get("odds", fixtureId=fixture_id,
+                            bookmakers=ODDSPAPI_BOOKMAKERS)
+        return data.get("bookmakerOdds", {}), "live"
+    except requests.HTTPError as e:
+        if e.response.status_code == 403:
+            body = e.response.json()
+            code = body.get("error", {}).get("code", "")
+            if code == "RESTRICTED_ACCESS":
+                print(f"  ℹ️  Game is live — free tier blocks live odds.")
+                print(f"     Falling back to /historical-odds (pre-game snapshot)...")
+                data = oddspapi_get("historical-odds", fixtureId=fixture_id,
+                                    bookmakers=ODDSPAPI_BOOKMAKERS)
+                # historical-odds nests under "bookmakers" not "bookmakerOdds"
+                raw = data.get("bookmakers", data)
+                # normalise historical snapshot lists → single latest value per player
+                return _normalise_historical(raw), "historical"
+        raise
+
+
+def _normalise_historical(bookmakers):
+    """
+    /historical-odds players values are lists of snapshots.
+    Convert to the same shape as /odds (single dict per player).
+    """
+    normalised = {}
+    for bk, bk_data in bookmakers.items():
+        markets = bk_data.get("markets", {})
+        norm_markets = {}
+        for mid, mdata in markets.items():
+            outcomes = mdata.get("outcomes", {})
+            norm_outcomes = {}
+            for oid, odata in outcomes.items():
+                players = odata.get("players", {})
+                norm_players = {}
+                for pid, snapshots in players.items():
+                    if isinstance(snapshots, list) and snapshots:
+                        # Take the most recent active snapshot
+                        active = [s for s in snapshots if s.get("active", True)]
+                        snap = active[-1] if active else snapshots[-1]
+                        norm_players[pid] = snap
+                    elif isinstance(snapshots, dict):
+                        norm_players[pid] = snapshots
+                norm_outcomes[oid] = {"players": norm_players}
+            norm_markets[mid] = {"outcomes": norm_outcomes}
+        normalised[bk] = {"markets": norm_markets}
+    return normalised
+
+
+def oddspapi_extract_lines(bookmaker_odds, market_catalog):
+    """
+    Walk OddsPapi odds and return {(norm_player_name, stat): median_line}.
+    Skips player_id == "0" (team/game markets).
+    Player names in OddsPapi are "Last, First" — we convert to "First Last".
+    """
+    name_to_stat = {v: k for k, v in ODDSPAPI_STAT_TO_MARKET.items()}
+    raw = {}
+
+    for bk, bk_data in bookmaker_odds.items():
+        markets = bk_data.get("markets", {}) if isinstance(bk_data, dict) else {}
+        for mid, mdata in markets.items():
+            minfo = market_catalog.get(str(mid))
+            if not minfo:
+                continue
+            stat     = name_to_stat.get(minfo["name"])
+            handicap = minfo["handicap"]
+            outcomes = mdata.get("outcomes", {}) if isinstance(mdata, dict) else {}
+            for oid, odata in outcomes.items():
+                players = odata.get("players", {}) if isinstance(odata, dict) else {}
+                for pid, pdata in players.items():
+                    if pid == "0":
+                        continue
+                    if not isinstance(pdata, dict):
+                        continue
+                    raw_name = pdata.get("playerName", "")
+                    if not raw_name or not pdata.get("active", True):
+                        continue
+                    norm = normalise_name(oddspapi_flip_name(raw_name))
+                    raw.setdefault((norm, stat), []).append(handicap)
+
+    return {k: round(pd.Series(v).median(), 2) for k, v in raw.items()}
+
+
+def oddspapi_flip_name(raw):
+    """'Fox, De\\'Aaron' -> 'De\\'Aaron Fox'"""
     raw = raw.strip()
     if "," in raw:
         last, first = raw.split(",", 1)
@@ -133,96 +233,119 @@ def normalise_oddspapi_name(raw):
     return raw
 
 
-def normalise_pred_name(name):
-    """Strip punctuation and lowercase for fuzzy comparison."""
+# ==============================================================================
+# THE ODDS API PROVIDER
+# ==============================================================================
+
+def theoddsapi_get(path, **params):
+    if not THE_ODDS_API_KEY:
+        print("\n❌  THE_ODDS_API_KEY not set.")
+        print("    1. Get a free key at https://the-odds-api.com  (500 req/mo free)")
+        print("    2. Add to ~/.zshrc:  export THE_ODDS_API_KEY=<your_key>")
+        print("    3. Run:              source ~/.zshrc")
+        sys.exit(1)
+    params["apiKey"] = THE_ODDS_API_KEY
+    return http_get(f"{THEODDSAPI_BASE}/{path}", params, "TheOddsAPI")
+
+
+def theoddsapi_find_event(date_str):
+    """
+    Find tonight's NBA event ID on The Odds API.
+    Returns (event_id, home_team, away_team) or None.
+    """
+    import datetime as dt
+    base = dt.datetime.strptime(date_str, "%Y-%m-%d")
+    # commence_time_from/to filter to today's games (ET evening = UTC next day)
+    from_utc = base.strftime("%Y-%m-%dT00:00:00Z")
+    to_utc   = (base + dt.timedelta(days=2)).strftime("%Y-%m-%dT12:00:00Z")
+
+    events = theoddsapi_get(
+        "sports/basketball_nba/events",
+        commenceTimeFrom=from_utc,
+        commenceTimeTo=to_utc,
+    )
+    if not events:
+        return None
+    # Prefer the Finals game (Spurs/Knicks); fall back to first event
+    for ev in events:
+        teams = f"{ev.get('home_team','')} {ev.get('away_team','')}".lower()
+        if "spurs" in teams or "knicks" in teams:
+            return ev["id"], ev["home_team"], ev["away_team"]
+    ev = events[0]
+    return ev["id"], ev["home_team"], ev["away_team"]
+
+
+def theoddsapi_fetch_lines(event_id):
+    """
+    Fetch player prop lines for all three stat types.
+    Returns {(norm_player_name, stat): median_line_across_bookmakers}.
+
+    The Odds API response per market outcome:
+      {"name": "De'Aaron Fox", "description": "Over", "price": -110, "point": 18.5}
+    Player name is already in "First Last" format. "point" is the prop line.
+    We average Over/Under point values (they're always equal) and take median
+    across bookmakers.
+    """
+    markets_param = ",".join(THEODDSAPI_MARKETS.values())
+    data = theoddsapi_get(
+        f"sports/basketball_nba/events/{event_id}/odds",
+        regions=THEODDSAPI_REGIONS,
+        markets=markets_param,
+        bookmakers=THEODDSAPI_BOOKMAKERS,
+        oddsFormat="american",
+    )
+
+    # Invert: market_key -> stat
+    market_to_stat = {v: k for k, v in THEODDSAPI_MARKETS.items()}
+
+    raw = {}  # (norm_name, stat) -> [line, ...]
+    for bk in data.get("bookmakers", []):
+        for market in bk.get("markets", []):
+            stat = market_to_stat.get(market["key"])
+            if not stat:
+                continue
+            for outcome in market.get("outcomes", []):
+                name  = outcome.get("name", "")
+                point = outcome.get("point")
+                if not name or point is None:
+                    continue
+                norm = normalise_name(name)
+                raw.setdefault((norm, stat), []).append(float(point))
+
+    return {k: round(pd.Series(v).median(), 2) for k, v in raw.items()}
+
+
+# ==============================================================================
+# SHARED NAME NORMALISATION & FUZZY MATCHING
+# ==============================================================================
+
+def normalise_name(name):
+    """Lowercase, strip punctuation/accents for fuzzy comparison."""
     return re.sub(r"[^a-z0-9 ]", "", name.lower()).strip()
 
 
-def best_name_match(target, candidates, threshold=NAME_MATCH_THRESHOLD):
+def best_match(target, candidates, threshold=NAME_MATCH_THRESHOLD):
     """
-    Return the best matching name from candidates using difflib SequenceMatcher.
-    Uses normalised (lowercase, no punctuation) comparison.
-    Returns (matched_name, score) or (None, 0) if below threshold.
+    Fuzzy-match target against candidates using difflib.
+    Returns (best_candidate, score) or (None, 0) if below threshold.
     """
-    target_norm = normalise_pred_name(target)
-    best_name, best_score = None, 0.0
-    for cand in candidates:
-        cand_norm = normalise_pred_name(cand)
-        score = difflib.SequenceMatcher(None, target_norm, cand_norm).ratio()
-        if score > best_score:
-            best_score, best_name = score, cand
-    if best_score >= threshold:
-        return best_name, best_score
-    return None, 0.0
+    t = normalise_name(target)
+    best, score = None, 0.0
+    for c in candidates:
+        s = difflib.SequenceMatcher(None, t, normalise_name(c)).ratio()
+        if s > score:
+            score, best = s, c
+    return (best, score) if score >= threshold else (None, 0.0)
 
 
 # ==============================================================================
-# PROP LINE EXTRACTION
-# ==============================================================================
-
-def extract_player_lines(bookmaker_odds, market_catalog):
-    """
-    Walk the OddsPapi odds structure and return:
-      { (normalised_player_name, stat): median_line_across_bookmakers }
-
-    OddsPapi structure:
-      bookmaker_odds[bookmaker][markets][market_id][outcomes][outcome_id]
-                   [players][player_id] = {playerName, price, active, ...}
-
-    The handicap (prop line) comes from market_catalog[market_id]["handicap"].
-    Player names are in "Last, First" format — we normalise to "First Last".
-    """
-    raw_lines = {}  # (player_name_normalised, stat) -> list of line floats
-
-    # Build reverse lookup: market_id -> stat
-    mid_to_stat = {mid: None for mid in market_catalog}
-    name_to_stat = {v: k for k, v in STAT_TO_MARKET_NAME.items()}
-    for mid, minfo in market_catalog.items():
-        mid_to_stat[mid] = name_to_stat.get(minfo["name"])
-
-    for bookmaker, bk_data in bookmaker_odds.items():
-        markets = bk_data.get("markets", {}) if isinstance(bk_data, dict) else {}
-
-        for market_id, market_data in markets.items():
-            minfo = market_catalog.get(str(market_id))
-            if not minfo:
-                continue  # not a stat we track
-            stat     = name_to_stat.get(minfo["name"])
-            handicap = minfo["handicap"]
-
-            outcomes = market_data.get("outcomes", {}) if isinstance(market_data, dict) else {}
-            for outcome_id, outcome_data in outcomes.items():
-                players = outcome_data.get("players", {}) if isinstance(outcome_data, dict) else {}
-
-                for pid, pdata in players.items():
-                    if pid == "0":
-                        continue  # "0" = team/game market, not a player
-                    if not isinstance(pdata, dict):
-                        continue
-                    raw_name   = pdata.get("playerName", "")
-                    is_active  = pdata.get("active", True)
-                    if not raw_name or not is_active:
-                        continue
-
-                    norm_name = normalise_pred_name(normalise_oddspapi_name(raw_name))
-                    key = (norm_name, stat)
-                    raw_lines.setdefault(key, []).append(handicap)
-
-    # Median across bookmakers per (player, stat)
-    return {key: round(pd.Series(vals).median(), 2)
-            for key, vals in raw_lines.items()}
-
-
-# ==============================================================================
-# GAP COMPUTATION
+# GAP & THRESHOLD LOGIC
 # ==============================================================================
 
 def compute_gap(status, fair_line, book_line):
     """
-    HOT  pick: gap = book_line - fair_line
-               Positive = book has line ABOVE our fair line → UNDER edge.
-    COLD pick: gap = fair_line - book_line
-               Positive = book has line BELOW our fair line → OVER edge.
+    HOT  → gap = book_line - fair_line  (positive = book is above fair, UNDER edge)
+    COLD → gap = fair_line - book_line  (positive = book is below fair, OVER edge)
     """
     if status == "HOT":
         return round(book_line - fair_line, 2)
@@ -231,32 +354,24 @@ def compute_gap(status, fair_line, book_line):
     return 0.0
 
 
-def parse_threshold(bet_recommendation):
-    """
-    Extract numeric threshold from bet_recommendation string.
-    'bet UNDER if line > 11.0' -> 11.0
-    'bet OVER if line < 22.3'  -> 22.3
-    """
-    m = re.search(r"[\d.]+$", str(bet_recommendation))
+def parse_threshold(bet_rec):
+    """'bet UNDER if line > 11.0' -> 11.0"""
+    m = re.search(r"[\d.]+$", str(bet_rec))
     return float(m.group()) if m else None
 
 
 def threshold_crossed(status, book_line, threshold):
-    """Return True if the book line is on the actionable side of our threshold."""
     if threshold is None:
         return False
-    if status == "HOT":
-        return book_line > threshold   # line is high enough to bet UNDER
-    elif status == "COLD":
-        return book_line < threshold   # line is low enough to bet OVER
-    return False
+    return book_line > threshold if status == "HOT" else book_line < threshold
 
 
 # ==============================================================================
-# OUTPUT FORMATTING
+# OUTPUT
 # ==============================================================================
 
 TIER_ORDER = {"STRONG": 0, "MODERATE": 1, "WEAK": 2}
+
 
 def print_edge_row(row):
     icon = "🔥" if row["status"] == "HOT" else "❄️"
@@ -276,8 +391,8 @@ def print_edge_row(row):
 
 def main():
     print(f"\n{'#'*70}")
-    print(f"#  HOT HAND FADER — ODDS COMPARISON")
-    print(f"#  {TODAY}  |  NBA Finals Game 2: Spurs vs Knicks")
+    print(f"#  HOT HAND FADER — ODDS COMPARISON  [{ODDS_PROVIDER.upper()}]")
+    print(f"#  {TODAY}")
     print(f"{'#'*70}")
 
     # ------------------------------------------------------------------
@@ -294,7 +409,7 @@ def main():
     ].copy()
 
     if preds.empty:
-        print(f"\n⚠️  No NBA predictions for {TODAY}.")
+        print(f"\n⚠️  No NBA predictions for {TODAY} in {PREDICTIONS_FILE}.")
         sys.exit(0)
 
     print(f"\n  Loaded {len(preds)} NBA prediction(s) for {TODAY}:")
@@ -303,62 +418,84 @@ def main():
               f"fair={r['fair_line']}  z={r['z_score']}")
 
     # ------------------------------------------------------------------
-    # 2. Find tonight's NBA fixture
+    # 2. Fetch player prop lines from chosen provider
     # ------------------------------------------------------------------
-    print(f"\n  Looking up tonight's NBA fixture...")
-    fixture = find_nba_fixture(TODAY)
-    time.sleep(0.3)
+    player_lines = {}
+    fixture_label = "?"
 
-    if not fixture:
-        print("❌  No NBA fixture with odds found for tonight.")
-        print("    Check OddsPapi coverage or try again closer to tip-off.")
+    if ODDS_PROVIDER == "theoddsapi":
+        print(f"\n  [The Odds API] Finding tonight's NBA event...")
+        result = theoddsapi_find_event(TODAY)
+        time.sleep(0.3)
+        if not result:
+            print("❌  No NBA event found for tonight on The Odds API.")
+            sys.exit(1)
+        event_id, home, away = result
+        fixture_label = f"{away} @ {home}"
+        print(f"  ✅ Event: {fixture_label}  (id: {event_id})")
+
+        print(f"  Fetching player props ({', '.join(THEODDSAPI_MARKETS.values())})...")
+        player_lines = theoddsapi_fetch_lines(event_id)
+        time.sleep(0.3)
+
+    elif ODDS_PROVIDER == "oddspapi":
+        print(f"\n  [OddsPapi] Finding tonight's NBA fixture...")
+        fixture = oddspapi_find_fixture(TODAY)
+        time.sleep(0.3)
+        if not fixture:
+            print("❌  No NBA fixture found on OddsPapi for tonight.")
+            sys.exit(1)
+        fid    = fixture["fixtureId"]
+        p1     = fixture.get("participant1Name", "?")
+        p2     = fixture.get("participant2Name", "?")
+        status = fixture.get("statusName", "")
+        fixture_label = f"{p2} @ {p1}"
+        print(f"  ✅ Fixture [{fid}]: {fixture_label}  status={status}")
+
+        print(f"  Building market catalog...")
+        catalog = oddspapi_build_market_catalog()
+        time.sleep(0.3)
+
+        print(f"  Fetching odds...")
+        bk_odds, source = oddspapi_fetch_odds(fid, status)
+        print(f"  Bookmakers: {list(bk_odds.keys())}  (source: {source})")
+        time.sleep(0.3)
+
+        player_lines = oddspapi_extract_lines(bk_odds, catalog)
+
+        if not player_lines:
+            print("\n⚠️  OddsPapi returned no player prop lines.")
+            print("   Root cause (confirmed by live API testing):")
+            print("   → Free tier only provides game-level markets (moneyline/spread/totals)")
+            print("   → All player_id values are '0' — no player-specific props exist")
+            print("   → This applies to both /odds and /historical-odds responses")
+            print("")
+            print("   To get NBA player props, either:")
+            print("   a) Upgrade to an OddsPapi paid plan")
+            print("   b) Switch to The Odds API (free, 500 req/mo):")
+            print("      1. Get key at https://the-odds-api.com")
+            print("      2. export THE_ODDS_API_KEY=<key>  >> ~/.zshrc")
+            print("      3. Set ODDS_PROVIDER = 'theoddsapi' in this file")
+            sys.exit(0)
+
+    else:
+        print(f"❌  Unknown ODDS_PROVIDER: {ODDS_PROVIDER!r}")
         sys.exit(1)
 
-    fid   = fixture["fixtureId"]
-    p1    = fixture.get("participant1Name", "?")
-    p2    = fixture.get("participant2Name", "?")
-    start = fixture.get("startTime", "")
-    print(f"  ✅ Found: [{fid}] {p1} vs {p2}  (tip: {start})")
-
     # ------------------------------------------------------------------
-    # 3. Build market catalog (stat → market IDs + lines)
+    # 3. Report what was found
     # ------------------------------------------------------------------
-    market_catalog = build_market_catalog()
-    time.sleep(0.3)
-
-    # ------------------------------------------------------------------
-    # 4. Fetch live odds for the fixture
-    # ------------------------------------------------------------------
-    print(f"  Fetching live odds from {BOOKMAKERS}...")
-    bookmaker_odds = fetch_odds(fid)
-    time.sleep(0.3)
-
-    bk_count = len(bookmaker_odds)
-    print(f"  Bookmakers returned: {list(bookmaker_odds.keys())}")
-
-    # ------------------------------------------------------------------
-    # 5. Extract player prop lines
-    # ------------------------------------------------------------------
-    print(f"  Extracting player prop lines...")
-    player_lines = extract_player_lines(bookmaker_odds, market_catalog)
-
     if not player_lines:
-        print("\n⚠️  No player prop lines found in tonight's odds.")
-        print("    This is normal — NBA props typically go live 2-4 hours before tip-off.")
-        print(f"    Tip-off: {start}")
-        print(f"    Re-run this script closer to game time.")
-        print("\n    If props never appear, OddsPapi free tier may not cover NBA player props.")
-        print("    Alternative: The Odds API (the-odds-api.com) has a free tier with full")
-        print("    NBA player prop coverage. Update BASE_URL and API key accordingly.")
+        print(f"\n⚠️  No player prop lines found for tonight.")
+        print(f"    Re-run closer to tip-off if props aren't posted yet.")
         sys.exit(0)
 
-    print(f"  Found {len(player_lines)} (player, stat) prop lines:")
-    prop_names = sorted(set(name for name, _ in player_lines.keys()))
-    for n in prop_names:
-        print(f"    {n}")
+    print(f"  Found lines for {len(player_lines)} (player, stat) pairs:")
+    for norm_name, stat in sorted(player_lines):
+        print(f"    {norm_name:30} {stat}  line={player_lines[(norm_name, stat)]}")
 
     # ------------------------------------------------------------------
-    # 6. Match predictions to bookmaker lines via fuzzy name matching
+    # 4. Match predictions → bookmaker lines (fuzzy name match)
     # ------------------------------------------------------------------
     print(f"\n  Matching predictions to prop lines...")
     results = []
@@ -371,29 +508,21 @@ def main():
         fair    = float(pred["fair_line"])
         bet_rec = pred["bet_recommendation"]
 
-        # Filter candidates to correct stat
-        stat_candidates = {name for name, s in player_lines.keys() if s == stat}
+        # Candidates: normalised names that have this stat
+        candidates = [name for name, s in player_lines if s == stat]
+        matched, score = best_match(player, candidates)
 
-        matched_name, score = best_name_match(player, stat_candidates)
-
-        if matched_name is None:
-            print(f"    ⚠️  No match: {player} ({stat})  — not in tonight's props")
+        if matched is None:
+            print(f"    ⚠️  No match: {player} ({stat})")
             continue
 
-        book_line = player_lines[(matched_name, stat)]
+        book_line = player_lines[(matched, stat)]
         gap       = compute_gap(status, fair, book_line)
         thresh    = parse_threshold(bet_rec)
         met       = threshold_crossed(status, book_line, thresh)
 
-        # Reconstruct original name for display
-        display_match = next(
-            (normalise_oddspapi_name(k[0]) for k in player_lines
-             if normalise_pred_name(normalise_oddspapi_name(k[0])) == matched_name
-             and k[1] == stat),
-            matched_name
-        )
-        print(f"    ✓  {player:22} ({stat}) → '{display_match}'  "
-              f"book={book_line}  gap={gap:+.2f}  match={score:.2f}")
+        print(f"    ✓  {player:22} ({stat})  book={book_line}  gap={gap:+.2f}  "
+              f"match='{matched}' ({score:.2f})")
 
         results.append({
             "player":           player,
@@ -412,28 +541,23 @@ def main():
         sys.exit(0)
 
     # ------------------------------------------------------------------
-    # 7. Rank: tier first (STRONG→WEAK), then gap descending
+    # 5. Rank and display
     # ------------------------------------------------------------------
-    df = pd.DataFrame(results)
+    df    = pd.DataFrame(results)
     edges = df[df["gap"] > 0].copy()
     edges["tier_rank"] = edges["tier"].map(TIER_ORDER)
     edges = edges.sort_values(["tier_rank", "gap"], ascending=[True, False]).reset_index(drop=True)
-
     no_edge = df[df["gap"] <= 0]
 
-    # ------------------------------------------------------------------
-    # 8. Print ranked output
-    # ------------------------------------------------------------------
     print(f"\n{'='*70}")
-    print(f"  EDGE REPORT — {TODAY}  |  {p1} vs {p2}")
+    print(f"  EDGE REPORT — {TODAY}  |  {fixture_label}")
     print(f"{'='*70}")
 
     if edges.empty:
         print("\n  No positive edges tonight.")
-        print("  (All bookmaker lines sit on the correct side of our fair lines already.)")
+        print("  (All bookmaker lines are already on the correct side of our fair line.)")
     else:
-        print(f"\n  {len(edges)} edge(s) found  |  "
-              f"⭐ {int(edges['threshold_met'].sum())} threshold(s) met\n")
+        print(f"\n  {len(edges)} edge(s)  |  ⭐ {int(edges['threshold_met'].sum())} threshold(s) met\n")
         for _, row in edges.iterrows():
             print_edge_row(row)
 
@@ -442,21 +566,19 @@ def main():
         print("  No edge (book line already on correct side):")
         for _, row in no_edge.iterrows():
             icon = "🔥" if row["status"] == "HOT" else "❄️"
-            print(f"    {icon} {row['player']:22} {row['stat']:5} "
+            print(f"    {icon} {row['player']:22} {row['stat']:5}  "
                   f"fair={row['fair_line']}  book={row['bookmaker_line']}  gap={row['gap']:+.2f}")
 
     # ------------------------------------------------------------------
-    # 9. Save to CSV
+    # 6. Save CSV
     # ------------------------------------------------------------------
-    save_df = df.assign(date=TODAY, fixture=f"{p1} vs {p2}")
-    save_df.to_csv(OUTPUT_FILE, index=False)
-
+    df.assign(date=TODAY, fixture=fixture_label).to_csv(OUTPUT_FILE, index=False)
     print(f"\n{'='*70}")
     print(f"  Saved {len(df)} row(s) to {OUTPUT_FILE}")
     if not edges.empty:
-        print(f"  Actionable edges: {int(edges['threshold_met'].sum())} "
-              f"(threshold crossed) + {int((~edges['threshold_met']).sum())} "
-              f"(monitor)")
+        n_met  = int(edges["threshold_met"].sum())
+        n_mon  = len(edges) - n_met
+        print(f"  Actionable (threshold met): {n_met}  |  Monitor: {n_mon}")
     print()
 
 

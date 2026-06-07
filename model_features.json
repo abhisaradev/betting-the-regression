@@ -5,14 +5,15 @@
     "abs_z_score",
     "season_avg",
     "during_hot",
+    "stat_encoded",
+    "player_regression_rate",
+    "season_position",
     "minutes_trend",
     "opp_3p_pct_allowed",
     "opp_pace",
     "is_home",
     "blowout_flag",
-    "def_tier_ord",
-    "player_regression_rate",
-    "season_position"
+    "def_tier_ord"
   ],
   "train_means": {
     "gap_from_baseline": 1.7719436553030299,
@@ -20,15 +21,33 @@
     "abs_z_score": 1.7719436553030299,
     "season_avg": 1.4735582386363637,
     "during_hot": 3.2455018939393936,
+    "stat_encoded": 0.0,
+    "player_regression_rate": 0.7303148044719318,
+    "season_position": 0.5,
     "minutes_trend": 4.9136949997402235,
     "opp_3p_pct_allowed": 0.3625894886363636,
     "opp_pace": 99.37435369318183,
     "is_home": 0.4865056818181818,
     "blowout_flag": 0.22869318181818182,
-    "def_tier_ord": 1.0419034090909092,
-    "player_regression_rate": 0.7303148044719318,
-    "season_position": 0.5
+    "def_tier_ord": 1.0419034090909092
   },
-  "model_type": "GradientBoosting",
-  "best_auc": 0.5801
+  "model_type": "GB-100 v2.2",
+  "best_auc": 0.5789,
+  "training_stats": [
+    "FG3M"
+  ],
+  "val_stats": [
+    "FG3M",
+    "PTS",
+    "PR",
+    "PA",
+    "PRA"
+  ],
+  "stat_encode": {
+    "FG3M": 0,
+    "PTS": 1,
+    "PR": 2,
+    "PA": 3,
+    "PRA": 4
+  }
 }

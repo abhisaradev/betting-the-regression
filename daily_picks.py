@@ -27,6 +27,9 @@ MODEL_PKL        = "model_regression.pkl"
 MODEL_META       = "model_features.json"
 PLAYER_RATES_PKL = "player_regression_rates.json"
 
+# Ordinal stat encoding — must match train_model.py STAT_ENCODE
+STAT_ENCODE = {"FG3M": 0, "PTS": 1, "PR": 2, "PA": 3, "PRA": 4}
+
 _REGRESSION_MODEL  = None   # GradientBoosting / XGBoost / LogReg pipeline
 _REGRESSION_META   = None   # {"features": [...], "train_means": {...}}
 _PLAYER_RATES      = None   # {"global_mean": float, "players": {name: rate}}
@@ -99,6 +102,9 @@ def score_regression_probability(pick: dict) -> float | None:
         current_games = pick.get("current_games", 41)  # default mid-season
         season_position = min(float(current_games) / 82.0, 1.0)
 
+        # Stat identity (v2.2) — use actual stat encoding, not training mean
+        stat_enc = float(STAT_ENCODE.get(pick.get("stat", "FG3M"), 0))
+
         # Build full feature vector
         feat_vals = {
             "gap_from_baseline":        gap,
@@ -106,6 +112,7 @@ def score_regression_probability(pick: dict) -> float | None:
             "abs_z_score":              abs(gap),
             "season_avg":               pick["baseline_avg"],
             "during_hot":               pick["recent_avg"],
+            "stat_encoded":             stat_enc,
             "minutes_trend":            pick.get("minutes_trend",
                                                  means.get("minutes_trend", 0.0)),
             "player_regression_rate":   player_rate,

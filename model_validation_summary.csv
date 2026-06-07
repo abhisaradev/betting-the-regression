@@ -1,6 +1,7 @@
-model,accuracy,roc_auc,notes
-Rule-based (z > 1.0),73.9%,---,Baseline
-Logistic original (v2.0),73.9%,0.538,11 features
-Logistic new features (v2.1),71.0%,0.532,+ player rate + season position
-GradientBoosting,72.0%,0.580,All 13 features
-XGBoost,71.3%,0.560,All 13 features
+model,accuracy,roc_auc,n_val,notes
+Rule-based (FG3M),73.9%,---,710,FG3M baseline
+Multi-stat rule-based,65.0%,---,4553,predict-all-regression
+v2.1 GB-100 (FG3M val),72.0%,0.584,710,reference
+v2.2 GB-100,64.0%,0.579,4553,stat_encoded
+v2.2 XGBoost-100,64.6%,0.565,4553,stat_encoded
+v2.2 GB-200,62.7%,0.569,4553,200 trees

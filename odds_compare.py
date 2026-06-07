@@ -410,7 +410,25 @@ def generate_dashboard(picks, game_info, date_str, model_record=None, all_injuri
     game_json     = json.dumps(game_info,           ensure_ascii=False)
     record_json   = json.dumps(model_record,        ensure_ascii=False)
     injuries_json = json.dumps(all_injuries or [],  ensure_ascii=False)
-    fixture     = f"{game_info.get('away_team','')} @ {game_info.get('home_team','')}"
+    fixture       = f"{game_info.get('away_team','')} @ {game_info.get('home_team','')}"
+
+    # Read per-stat performance CSV and aggregate totals per stat
+    STAT_PERF_FILE = "model_performance_by_stat.csv"
+    stat_perf = {}
+    try:
+        if os.path.exists(STAT_PERF_FILE):
+            sp = pd.read_csv(STAT_PERF_FILE)
+            for stat in ["FG3M", "PTS", "PRA"]:
+                rows = sp[sp["stat"] == stat]
+                if not rows.empty:
+                    w      = int(rows["wins"].sum())
+                    l      = int(rows["losses"].sum())
+                    played = w + l
+                    wr     = round(100.0 * w / played, 1) if played > 0 else None
+                    stat_perf[stat] = {"wins": w, "losses": l, "win_rate": wr}
+    except Exception:
+        pass   # degrade gracefully — JS shows backtest baselines
+    stat_perf_json = json.dumps(stat_perf, ensure_ascii=False)
 
     # ------------------------------------------------------------------
     # HTML template — plain string (not f-string), use __TOKEN__ markers
@@ -648,6 +666,24 @@ input[type=number]{width:82px}
 .pn{color:var(--bet-under);font-weight:700}
 .empty{text-align:center;color:var(--text-3);font-size:13px;padding:24px}
 
+/* ── Per-stat performance table ── */
+.sp-card{background:var(--bg-card);border:1px solid var(--border);
+         border-radius:var(--r-lg);padding:14px 18px;margin-bottom:20px}
+.sp-tbl{width:100%;border-collapse:collapse;margin-top:6px}
+.sp-tbl th{font-size:10px;text-transform:uppercase;letter-spacing:.4px;
+           color:var(--text-2);text-align:left;padding:5px 8px;
+           border-bottom:2px solid var(--border)}
+.sp-tbl td{font-size:13px;padding:8px 8px;border-bottom:1px solid var(--border)}
+.sp-stat{font-weight:800;letter-spacing:.2px}
+.sp-sig{font-size:12px;color:var(--text-2)}
+.sp-bt{font-size:11px;color:var(--text-3)}
+.sp-dim{color:var(--text-3)}
+.sp-good{color:var(--accent-hot);font-weight:700}
+.sp-ok{color:#f59e0b;font-weight:700}
+.sp-bad{color:var(--bet-under);font-weight:700}
+.sp-note{font-size:11px;color:var(--text-3);font-style:italic;
+         margin-bottom:8px;padding:4px 0}
+
 /* ── Injury section ── */
 .inj-sec{background:var(--bg-card);border:1px solid var(--border);
          border-radius:var(--r-lg);padding:14px 18px;margin-bottom:20px}
@@ -726,6 +762,9 @@ input[type=number]{width:82px}
     <div class="mc"><div class="mc-label">Model record</div><div class="mc-val" id="m-record">&#8212;</div></div>
   </div>
 
+  <!-- Per-stat performance (rendered by JS from STAT_PERF data) -->
+  <div id="stat-perf-root"></div>
+
   <!-- Picks -->
   <div id="picks-root"></div>
 
@@ -781,6 +820,7 @@ const PICKS       = __PICKS_JSON__;
 const GAME_INFO   = __GAME_JSON__;
 const MODEL_RECORD= __RECORD_JSON__;
 const INJURIES    = __INJURIES_JSON__;
+const STAT_PERF   = __STAT_PERF_JSON__;
 
 // ── State (persisted in localStorage) ──────────────────────────────────────
 let state = {
@@ -859,6 +899,62 @@ function renderInjuries() {
       <table class="inj-tbl">
         <thead><tr>
           <th>Player</th><th>Team</th><th>Status</th><th>Injury</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// ── Per-stat performance table ───────────────────────────────────────────────
+function renderStatPerf() {
+  const root = document.getElementById('stat-perf-root');
+  if (!root) return;
+
+  // Backtest baselines (from multi-season research — hardcoded)
+  const BT = {
+    FG3M: {rate: 73.9, label: 'Strongest', full: '73.9% backtest'},
+    PTS:  {rate: 66.2, label: 'Moderate',  full: '66.2% backtest'},
+    PRA:  {rate: 60.9, label: 'Weakest',   full: '60.9% backtest'},
+  };
+
+  const hasLive = STAT_PERF && Object.keys(STAT_PERF).length > 0;
+  const note = hasLive
+    ? ''
+    : '<div class="sp-note">Live data accumulating &mdash; showing backtest baselines only</div>';
+
+  const rows = ['FG3M','PTS','PRA'].map(stat => {
+    const bt   = BT[stat];
+    const live = hasLive ? STAT_PERF[stat] : null;
+
+    let wCell, lCell, rCell;
+    if (live) {
+      const wr = live.win_rate !== null && live.win_rate !== undefined
+        ? live.win_rate.toFixed(1)+'%' : '&mdash;';
+      const wrCls = live.win_rate >= 65 ? 'sp-good'
+                  : live.win_rate >= 55 ? 'sp-ok' : 'sp-bad';
+      wCell = `<td>${live.wins}</td>`;
+      lCell = `<td>${live.losses}</td>`;
+      rCell = `<td class="${wrCls}">${wr}</td>`;
+    } else {
+      wCell = `<td class="sp-dim">&mdash;</td>`;
+      lCell = `<td class="sp-dim">&mdash;</td>`;
+      rCell = `<td class="sp-dim">${bt.rate}%</td>`;
+    }
+
+    return `<tr>
+      <td class="sp-stat">${stat}</td>
+      ${wCell}${lCell}${rCell}
+      <td class="sp-sig">${bt.label} <span class="sp-bt">(${bt.full})</span></td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="sec-hdr">Model performance by stat</div>
+    <div class="sp-card">
+      ${note}
+      <table class="sp-tbl">
+        <thead><tr>
+          <th>Stat</th><th>W</th><th>L</th><th>Win Rate</th><th>Signal Strength</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -1204,6 +1300,7 @@ function renderAll() {
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadState();
 renderInjuries();
+renderStatPerf();
 renderPicks();
 buildDropdown();
 renderAll();
@@ -1213,12 +1310,13 @@ renderAll();
 """
 
     # Inject Python-computed values into the template
-    html = html.replace("__PICKS_JSON__",    picks_json)
-    html = html.replace("__GAME_JSON__",     game_json)
-    html = html.replace("__RECORD_JSON__",   record_json)
-    html = html.replace("__INJURIES_JSON__", injuries_json)
-    html = html.replace("__DATE__",          date_str)
-    html = html.replace("__FIXTURE__",       fixture)
+    html = html.replace("__PICKS_JSON__",     picks_json)
+    html = html.replace("__GAME_JSON__",      game_json)
+    html = html.replace("__RECORD_JSON__",    record_json)
+    html = html.replace("__INJURIES_JSON__",  injuries_json)
+    html = html.replace("__STAT_PERF_JSON__", stat_perf_json)
+    html = html.replace("__DATE__",           date_str)
+    html = html.replace("__FIXTURE__",        fixture)
 
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as fh:
         fh.write(html)
@@ -1239,31 +1337,30 @@ def main():
     print(f"{'#'*70}")
 
     # ------------------------------------------------------------------
-    # 1. Load today's NBA predictions (1-day lookback if none for today)
+    # 1. Load today's NBA predictions (scan back up to 7 days if needed)
     # ------------------------------------------------------------------
     if not os.path.exists(PREDICTIONS_FILE):
         print(f"\n❌  {PREDICTIONS_FILE} not found. Run daily_picks.py first.")
         sys.exit(1)
 
     all_preds = pd.read_csv(PREDICTIONS_FILE)
+    nba_preds = all_preds[all_preds["league"] == "NBA"].copy()
+
     pred_date = TODAY
-    preds = all_preds[
-        (all_preds["date"].astype(str) == pred_date) &
-        (all_preds["league"] == "NBA")
-    ].copy()
+    preds = nba_preds[nba_preds["date"].astype(str) == pred_date].copy()
 
     if preds.empty:
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        preds = all_preds[
-            (all_preds["date"].astype(str) == yesterday) &
-            (all_preds["league"] == "NBA")
-        ].copy()
-        if not preds.empty:
-            pred_date = yesterday
-            print(f"\n  ℹ️  No picks for {TODAY} — using picks from {yesterday}")
+        # Scan back up to 7 days to find the most recent predictions
+        for days_back in range(1, 8):
+            candidate = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+            preds = nba_preds[nba_preds["date"].astype(str) == candidate].copy()
+            if not preds.empty:
+                pred_date = candidate
+                print(f"\n  ℹ️  No picks for {TODAY} — using most recent picks from {candidate}")
+                break
 
     if preds.empty:
-        print(f"\n⚠️  No NBA predictions found. Run daily_picks.py first.")
+        print(f"\n⚠️  No NBA predictions found in the last 7 days. Run daily_picks.py first.")
         sys.exit(0)
 
     print(f"\n  Loaded {len(preds)} NBA prediction(s) for {pred_date}:")

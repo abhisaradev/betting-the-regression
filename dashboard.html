@@ -231,6 +231,24 @@ input[type=number]{width:82px}
 .pn{color:var(--bet-under);font-weight:700}
 .empty{text-align:center;color:var(--text-3);font-size:13px;padding:24px}
 
+/* ── Per-stat performance table ── */
+.sp-card{background:var(--bg-card);border:1px solid var(--border);
+         border-radius:var(--r-lg);padding:14px 18px;margin-bottom:20px}
+.sp-tbl{width:100%;border-collapse:collapse;margin-top:6px}
+.sp-tbl th{font-size:10px;text-transform:uppercase;letter-spacing:.4px;
+           color:var(--text-2);text-align:left;padding:5px 8px;
+           border-bottom:2px solid var(--border)}
+.sp-tbl td{font-size:13px;padding:8px 8px;border-bottom:1px solid var(--border)}
+.sp-stat{font-weight:800;letter-spacing:.2px}
+.sp-sig{font-size:12px;color:var(--text-2)}
+.sp-bt{font-size:11px;color:var(--text-3)}
+.sp-dim{color:var(--text-3)}
+.sp-good{color:var(--accent-hot);font-weight:700}
+.sp-ok{color:#f59e0b;font-weight:700}
+.sp-bad{color:var(--bet-under);font-weight:700}
+.sp-note{font-size:11px;color:var(--text-3);font-style:italic;
+         margin-bottom:8px;padding:4px 0}
+
 /* ── Injury section ── */
 .inj-sec{background:var(--bg-card);border:1px solid var(--border);
          border-radius:var(--r-lg);padding:14px 18px;margin-bottom:20px}
@@ -309,6 +327,9 @@ input[type=number]{width:82px}
     <div class="mc"><div class="mc-label">Model record</div><div class="mc-val" id="m-record">&#8212;</div></div>
   </div>
 
+  <!-- Per-stat performance (rendered by JS from STAT_PERF data) -->
+  <div id="stat-perf-root"></div>
+
   <!-- Picks -->
   <div id="picks-root"></div>
 
@@ -364,6 +385,7 @@ const PICKS       = [{"player": "Landry Shamet", "team": "New York Knicks", "sta
 const GAME_INFO   = {"home_team": "San Antonio Spurs", "away_team": "New York Knicks", "start_time_et": "8:30 PM ET", "venue": "Frost Bank Center, San Antonio", "series_record": "NBA Finals - Game 2", "round_label": "NBA Finals"};
 const MODEL_RECORD= null;
 const INJURIES    = [{"player": "David Jones Garcia", "team": "San Antonio Spurs", "status": "OUT", "description": "Right Ankle Surgery"}];
+const STAT_PERF   = {};
 
 // ── State (persisted in localStorage) ──────────────────────────────────────
 let state = {
@@ -442,6 +464,62 @@ function renderInjuries() {
       <table class="inj-tbl">
         <thead><tr>
           <th>Player</th><th>Team</th><th>Status</th><th>Injury</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// ── Per-stat performance table ───────────────────────────────────────────────
+function renderStatPerf() {
+  const root = document.getElementById('stat-perf-root');
+  if (!root) return;
+
+  // Backtest baselines (from multi-season research — hardcoded)
+  const BT = {
+    FG3M: {rate: 73.9, label: 'Strongest', full: '73.9% backtest'},
+    PTS:  {rate: 66.2, label: 'Moderate',  full: '66.2% backtest'},
+    PRA:  {rate: 60.9, label: 'Weakest',   full: '60.9% backtest'},
+  };
+
+  const hasLive = STAT_PERF && Object.keys(STAT_PERF).length > 0;
+  const note = hasLive
+    ? ''
+    : '<div class="sp-note">Live data accumulating &mdash; showing backtest baselines only</div>';
+
+  const rows = ['FG3M','PTS','PRA'].map(stat => {
+    const bt   = BT[stat];
+    const live = hasLive ? STAT_PERF[stat] : null;
+
+    let wCell, lCell, rCell;
+    if (live) {
+      const wr = live.win_rate !== null && live.win_rate !== undefined
+        ? live.win_rate.toFixed(1)+'%' : '&mdash;';
+      const wrCls = live.win_rate >= 65 ? 'sp-good'
+                  : live.win_rate >= 55 ? 'sp-ok' : 'sp-bad';
+      wCell = `<td>${live.wins}</td>`;
+      lCell = `<td>${live.losses}</td>`;
+      rCell = `<td class="${wrCls}">${wr}</td>`;
+    } else {
+      wCell = `<td class="sp-dim">&mdash;</td>`;
+      lCell = `<td class="sp-dim">&mdash;</td>`;
+      rCell = `<td class="sp-dim">${bt.rate}%</td>`;
+    }
+
+    return `<tr>
+      <td class="sp-stat">${stat}</td>
+      ${wCell}${lCell}${rCell}
+      <td class="sp-sig">${bt.label} <span class="sp-bt">(${bt.full})</span></td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="sec-hdr">Model performance by stat</div>
+    <div class="sp-card">
+      ${note}
+      <table class="sp-tbl">
+        <thead><tr>
+          <th>Stat</th><th>W</th><th>L</th><th>Win Rate</th><th>Signal Strength</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -787,6 +865,7 @@ function renderAll() {
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadState();
 renderInjuries();
+renderStatPerf();
 renderPicks();
 buildDropdown();
 renderAll();

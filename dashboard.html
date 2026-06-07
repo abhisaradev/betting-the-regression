@@ -269,6 +269,14 @@ input[type=number]{width:82px}
           border-radius:4px;display:inline-block;font-weight:600}
 .pick.inj-out{border-left-color:#991b1b!important;opacity:.55}
 
+/* ── v2 Regression probability pill ── */
+.reg-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;
+          font-weight:700;padding:2px 7px;border-radius:10px;
+          letter-spacing:.3px;margin-top:5px}
+.reg-pill-high{background:#dcfce7;color:#166534}   /* ≥70% green   */
+.reg-pill-med {background:#fef9c3;color:#713f12}   /* 60-69% amber  */
+.reg-pill-low {background:#f3f4f6;color:#6b7280}   /* <60%  grey    */
+
 /* Responsive */
 @media(max-width:600px){
   .metrics,.pstats{grid-template-columns:repeat(2,1fr)}
@@ -381,7 +389,7 @@ input[type=number]{width:82px}
 
 <script>
 // ── Data injected by Python ─────────────────────────────────────────────────
-const PICKS       = [{"player": "Landry Shamet", "team": "New York Knicks", "stat": "PRA", "status": "HOT", "tier": "STRONG", "fair_line": 7.6, "dk_line": 9.5, "gap": 1.9, "z_score": 1.32, "bet_recommendation": "bet UNDER if line > 11.0", "recent_avg": 16.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 11.0, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": ""}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "FG3M", "status": "HOT", "tier": "STRONG", "fair_line": 1.6, "dk_line": 1.5, "gap": -0.1, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 2.4", "recent_avg": 3.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 2.4, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": ""}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "PTS", "status": "HOT", "tier": "STRONG", "fair_line": 6.2, "dk_line": 7.5, "gap": 1.3, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 9.3", "recent_avg": 14.33, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 9.3, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": ""}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PRA", "status": "COLD", "tier": "MODERATE", "fair_line": 25.76, "dk_line": 24.5, "gap": 1.26, "z_score": -1.18, "bet_recommendation": "bet OVER if line < 22.3", "recent_avg": 17.67, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 22.3, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": ""}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PTS", "status": "COLD", "tier": "MODERATE", "fair_line": 15.88, "dk_line": 15.5, "gap": 0.38, "z_score": -1.15, "bet_recommendation": "bet OVER if line < 12.9", "recent_avg": 9.0, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 12.9, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": ""}, {"player": "Mikal Bridges", "team": "New York Knicks", "stat": "FG3M", "status": "COLD", "tier": "MODERATE", "fair_line": 1.9, "dk_line": 1.5, "gap": 0.4, "z_score": -1.08, "bet_recommendation": "bet OVER if line < 1.2", "recent_avg": 0.33, "recent_mpg": 32.3, "baseline_games": 82, "threshold": 1.2, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": ""}, {"player": "Stephon Castle", "team": "San Antonio Spurs", "stat": "FG3M", "status": "COLD", "tier": "WEAK", "fair_line": 1.58, "dk_line": 1.5, "gap": 0.08, "z_score": -0.93, "bet_recommendation": "bet OVER if line < 0.9", "recent_avg": 0.33, "recent_mpg": 34.0, "baseline_games": 19, "threshold": 0.9, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": ""}];
+const PICKS       = [{"player": "Landry Shamet", "team": "New York Knicks", "stat": "PRA", "status": "HOT", "tier": "STRONG", "fair_line": 7.6, "dk_line": 9.5, "gap": 1.9, "z_score": 1.32, "bet_recommendation": "bet UNDER if line > 11.0", "recent_avg": 16.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 11.0, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "FG3M", "status": "HOT", "tier": "STRONG", "fair_line": 1.6, "dk_line": 1.5, "gap": -0.1, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 2.4", "recent_avg": 3.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 2.4, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "PTS", "status": "HOT", "tier": "STRONG", "fair_line": 6.2, "dk_line": 7.5, "gap": 1.3, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 9.3", "recent_avg": 14.33, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 9.3, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PRA", "status": "COLD", "tier": "MODERATE", "fair_line": 25.76, "dk_line": 24.5, "gap": 1.26, "z_score": -1.18, "bet_recommendation": "bet OVER if line < 22.3", "recent_avg": 17.67, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 22.3, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PTS", "status": "COLD", "tier": "MODERATE", "fair_line": 15.88, "dk_line": 15.5, "gap": 0.38, "z_score": -1.15, "bet_recommendation": "bet OVER if line < 12.9", "recent_avg": 9.0, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 12.9, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Mikal Bridges", "team": "New York Knicks", "stat": "FG3M", "status": "COLD", "tier": "MODERATE", "fair_line": 1.9, "dk_line": 1.5, "gap": 0.4, "z_score": -1.08, "bet_recommendation": "bet OVER if line < 1.2", "recent_avg": 0.33, "recent_mpg": 32.3, "baseline_games": 82, "threshold": 1.2, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Stephon Castle", "team": "San Antonio Spurs", "stat": "FG3M", "status": "COLD", "tier": "WEAK", "fair_line": 1.58, "dk_line": 1.5, "gap": 0.08, "z_score": -0.93, "bet_recommendation": "bet OVER if line < 0.9", "recent_avg": 0.33, "recent_mpg": 34.0, "baseline_games": 19, "threshold": 0.9, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}];
 const GAME_INFO   = {"home_team": "San Antonio Spurs", "away_team": "New York Knicks", "start_time_et": "8:30 PM ET", "venue": "Frost Bank Center, San Antonio", "series_record": "NBA Finals - Game 2", "round_label": "NBA Finals"};
 const MODEL_RECORD= null;
 const INJURIES    = [{"player": "David Jones Garcia", "team": "San Antonio Spurs", "status": "OUT", "description": "Right Ankle Surgery"}];
@@ -587,6 +595,14 @@ function pickCard(p, idx) {
     injHtml = `<div class="pick-inj ib-${injFlag}">${icon} ${esc(desc)}</div>`;
   }
 
+  // v2 regression probability pill (only shown when available)
+  let regPillHtml = '';
+  if (p.regression_probability !== null && p.regression_probability !== undefined) {
+    const pct = Math.round(p.regression_probability * 1000) / 10;  // 1 dp
+    const pillCls = pct >= 70 ? 'reg-pill-high' : (pct >= 60 ? 'reg-pill-med' : 'reg-pill-low');
+    regPillHtml = `<div class="reg-pill ${pillCls}">&#129302; v2 model: ${pct}% regression</div>`;
+  }
+
   // Action button
   let actionHtml = '', watchSub = '';
   if (isOut) {
@@ -633,6 +649,7 @@ function pickCard(p, idx) {
     </div>
   </div>
   ${injHtml}
+  ${regPillHtml}
   <div class="pmeta">
     <span>${esc(p.team)}</span>
     <span>${streakIcon} ${isHot?'Hot':'Cold'} streak &middot; last 3 avg: ${p.recent_avg}</span>

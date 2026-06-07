@@ -704,6 +704,14 @@ input[type=number]{width:82px}
           border-radius:4px;display:inline-block;font-weight:600}
 .pick.inj-out{border-left-color:#991b1b!important;opacity:.55}
 
+/* ── v2 Regression probability pill ── */
+.reg-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;
+          font-weight:700;padding:2px 7px;border-radius:10px;
+          letter-spacing:.3px;margin-top:5px}
+.reg-pill-high{background:#dcfce7;color:#166534}   /* ≥70% green   */
+.reg-pill-med {background:#fef9c3;color:#713f12}   /* 60-69% amber  */
+.reg-pill-low {background:#f3f4f6;color:#6b7280}   /* <60%  grey    */
+
 /* Responsive */
 @media(max-width:600px){
   .metrics,.pstats{grid-template-columns:repeat(2,1fr)}
@@ -1022,6 +1030,14 @@ function pickCard(p, idx) {
     injHtml = `<div class="pick-inj ib-${injFlag}">${icon} ${esc(desc)}</div>`;
   }
 
+  // v2 regression probability pill (only shown when available)
+  let regPillHtml = '';
+  if (p.regression_probability !== null && p.regression_probability !== undefined) {
+    const pct = Math.round(p.regression_probability * 1000) / 10;  // 1 dp
+    const pillCls = pct >= 70 ? 'reg-pill-high' : (pct >= 60 ? 'reg-pill-med' : 'reg-pill-low');
+    regPillHtml = `<div class="reg-pill ${pillCls}">&#129302; v2 model: ${pct}% regression</div>`;
+  }
+
   // Action button
   let actionHtml = '', watchSub = '';
   if (isOut) {
@@ -1068,6 +1084,7 @@ function pickCard(p, idx) {
     </div>
   </div>
   ${injHtml}
+  ${regPillHtml}
   <div class="pmeta">
     <span>${esc(p.team)}</span>
     <span>${streakIcon} ${isHot?'Hot':'Cold'} streak &middot; last 3 avg: ${p.recent_avg}</span>
@@ -1561,25 +1578,34 @@ def main():
             elif injury_flag == "GTD":
                 injury_desc = f"GTD — confirm active before betting ({desc_raw})" if desc_raw else "GTD — confirm active"
 
+        # Include regression_probability from CSV if available (v2 model)
+        reg_prob = None
+        if "regression_probability" in row and pd.notna(row["regression_probability"]):
+            try:
+                reg_prob = round(float(row["regression_probability"]), 3)
+            except (ValueError, TypeError):
+                reg_prob = None
+
         picks_for_dash.append({
-            "player":             r["player"],
-            "team":               team_name,
-            "stat":               r["stat"],
-            "status":             r["status"],
-            "tier":               r["tier"],
-            "fair_line":          r["fair_line"],
-            "dk_line":            r["bookmaker_line"],
-            "gap":                r["gap"],
-            "z_score":            round(float(row["z_score"]), 2),
-            "bet_recommendation": r["bet_recommendation"],
-            "recent_avg":         round(float(row["recent_avg"]), 2),
-            "recent_mpg":         round(float(row["recent_mpg"]), 1),
-            "baseline_games":     baseline_games,
-            "threshold":          thresh,
-            "threshold_met":      bool(r["threshold_met"]),
-            "direction":          direction,
-            "injury_flag":        injury_flag,
-            "injury_desc":        injury_desc,
+            "player":                 r["player"],
+            "team":                   team_name,
+            "stat":                   r["stat"],
+            "status":                 r["status"],
+            "tier":                   r["tier"],
+            "fair_line":              r["fair_line"],
+            "dk_line":                r["bookmaker_line"],
+            "gap":                    r["gap"],
+            "z_score":                round(float(row["z_score"]), 2),
+            "bet_recommendation":     r["bet_recommendation"],
+            "recent_avg":             round(float(row["recent_avg"]), 2),
+            "recent_mpg":             round(float(row["recent_mpg"]), 1),
+            "baseline_games":         baseline_games,
+            "threshold":              thresh,
+            "threshold_met":          bool(r["threshold_met"]),
+            "direction":              direction,
+            "injury_flag":            injury_flag,
+            "injury_desc":            injury_desc,
+            "regression_probability": reg_prob,
         })
 
     # ------------------------------------------------------------------

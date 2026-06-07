@@ -10,6 +10,7 @@ from nba_api.stats.endpoints import (
 )
 from nba_api.stats.static import players
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import os
 import time
@@ -17,6 +18,77 @@ import re
 import json
 import difflib
 import subprocess
+
+# ==============================================================================
+# REGRESSION MODEL (v2) — loaded once at startup; soft dependency on joblib
+# ==============================================================================
+
+MODEL_PKL  = "model_regression.pkl"
+MODEL_META = "model_features.json"
+
+_REGRESSION_PIPELINE = None   # sklearn Pipeline (StandardScaler + LogReg)
+_REGRESSION_META     = None   # {"features": [...], "train_means": {...}}
+
+
+def _load_regression_model():
+    """Load the trained logistic regression pipeline from disk (if available)."""
+    global _REGRESSION_PIPELINE, _REGRESSION_META
+    try:
+        import joblib  # Anaconda env only; not in system python3.11
+        if os.path.exists(MODEL_PKL) and os.path.exists(MODEL_META):
+            _REGRESSION_PIPELINE = joblib.load(MODEL_PKL)
+            with open(MODEL_META) as fh:
+                _REGRESSION_META = json.load(fh)
+            print(f"  🤖 v2 regression model loaded  "
+                  f"({len(_REGRESSION_META['features'])} features)")
+        else:
+            print(f"  ℹ️  Regression model files not found — skipping v2 scoring")
+    except ImportError:
+        print("  ℹ️  joblib not available in this Python env — skipping v2 scoring")
+    except Exception as exc:
+        print(f"  ⚠️  Regression model load failed: {exc}")
+
+
+def score_regression_probability(pick: dict) -> float | None:
+    """
+    Return P(regression towards fair line) from the trained logistic regression.
+
+    Uses available pick fields for known features; imputes contextual features
+    (opponent defense, pace, home/away) with training-set means, so they
+    contribute zero variance to the prediction.
+
+    Returns None if the model is not loaded.
+    """
+    if _REGRESSION_PIPELINE is None or _REGRESSION_META is None:
+        return None
+    try:
+        features = _REGRESSION_META["features"]
+        means    = _REGRESSION_META["train_means"]
+
+        gap = pick["recent_avg"] - pick["baseline_avg"]
+
+        # Build feature dict — known values from pick; unknown imputed with means
+        feat_vals = {
+            "gap_from_baseline":   gap,
+            "z_score":             pick["z_score"],
+            "abs_z_score":         abs(gap),
+            "season_avg":          pick["baseline_avg"],
+            "during_hot":          pick["recent_avg"],
+            "minutes_trend":       pick.get("minutes_trend",
+                                            means.get("minutes_trend", 0.0)),
+            # contextual — not fetched in daily workflow, use training means
+            "opp_3p_pct_allowed":  means.get("opp_3p_pct_allowed", 0.363),
+            "opp_pace":            means.get("opp_pace", 99.4),
+            "is_home":             means.get("is_home", 0.487),
+            "blowout_flag":        means.get("blowout_flag", 0.229),
+            "def_tier_ord":        means.get("def_tier_ord", 1.042),
+        }
+
+        X = np.array([[feat_vals.get(f, means.get(f, 0.0)) for f in features]])
+        prob = float(_REGRESSION_PIPELINE.predict_proba(X)[0, 1])
+        return round(prob, 3)
+    except Exception:
+        return None
 
 # ==============================================================================
 # CONSTANTS & CONFIG
@@ -551,6 +623,9 @@ def run_for_league(league_name, league_id, current_season, previous_season, toda
                 # Returning-from-injury signal (5+ day gap in recent log)
                 is_returning = result.get("returning", False)
 
+                # Minutes trend for regression model feature
+                minutes_trend = result["recent_mpg"] - result["baseline_mpg"]
+
                 for stat in STATS_TO_CHECK:
                     status = result.get(f"{stat}_status", "NORMAL")
                     if status not in ("HOT", "COLD"):
@@ -572,7 +647,8 @@ def run_for_league(league_name, league_id, current_season, previous_season, toda
                         injury_desc = "↩️ RETURNING — first game back, demoted to WEAK"
                         tier = "WEAK"   # demote returning players
 
-                    all_picks.append({
+                    # Build pick; score regression probability (v2 model)
+                    pick_partial = {
                         "date":             today_str,
                         "league":           league_name,
                         "season":           current_season,
@@ -590,10 +666,15 @@ def run_for_league(league_name, league_id, current_season, previous_season, toda
                         "fair_line":        result[f"{stat}_fair_line"],
                         "bet_recommendation": result[f"{stat}_bet_rec"],
                         "recent_mpg":       result["recent_mpg"],
+                        "minutes_trend":    round(minutes_trend, 2),
                         # injury fields (dropped before CSV save)
                         "_injury_flag":     injury_flag,
                         "_injury_desc":     injury_desc,
-                    })
+                    }
+                    pick_partial["regression_probability"] = score_regression_probability(
+                        pick_partial
+                    )
+                    all_picks.append(pick_partial)
 
     if out_skipped:
         print(f"\n  ⛔  {out_skipped} player(s) removed — OUT on injury report")
@@ -609,6 +690,11 @@ def print_full_pick(pick):
     print(f"      Source: {pick['baseline_used']} | MPG: {pick['recent_mpg']}")
     print(f"      📊 FAIR LINE: {pick['fair_line']}")
     print(f"      💰 ACTION: {pick['bet_recommendation']}")
+    reg_prob = pick.get("regression_probability")
+    if reg_prob is not None:
+        pct = round(reg_prob * 100, 1)
+        conf = "HIGH" if pct >= 70 else ("MED" if pct >= 60 else "LOW")
+        print(f"      🤖 v2 MODEL: {pct}% regression probability [{conf} confidence]")
     if pick.get("_injury_flag"):
         print(f"      {pick['_injury_desc']}")
     print()
@@ -627,10 +713,12 @@ def main():
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     
     print(f"\n{'#'*70}")
-    print(f"#  HOT HAND FADER DAILY TOOL — v1.2")
+    print(f"#  BETTING THE REGRESSION — daily_picks.py v1.3")
     print(f"#  Running on {today}")
     print(f"#  Auto-grading yesterday ({yesterday})")
     print(f"{'#'*70}")
+
+    _load_regression_model()
     
     # Duplicate prevention
     if os.path.exists(PREDICTIONS_FILE):
@@ -681,6 +769,7 @@ def main():
     picks_df = picks_df.sort_values(["tier_rank", "abs_z"], ascending=[True, False])
     
     # Save — drop internal sort keys and injury fields (ephemeral, fetched fresh each run)
+    # minutes_trend and regression_probability are kept in CSV
     drop_cols = ["abs_z", "tier_rank", "_injury_flag", "_injury_desc"]
     save_cols = [c for c in drop_cols if c in picks_df.columns]
     if os.path.exists(PREDICTIONS_FILE):

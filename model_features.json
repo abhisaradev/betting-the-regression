@@ -1,0 +1,28 @@
+{
+  "features": [
+    "gap_from_baseline",
+    "z_score",
+    "abs_z_score",
+    "season_avg",
+    "during_hot",
+    "minutes_trend",
+    "opp_3p_pct_allowed",
+    "opp_pace",
+    "is_home",
+    "blowout_flag",
+    "def_tier_ord"
+  ],
+  "train_means": {
+    "gap_from_baseline": 1.7719436553030299,
+    "z_score": 3.21551092878899,
+    "abs_z_score": 1.7719436553030299,
+    "season_avg": 1.4735582386363637,
+    "during_hot": 3.2455018939393936,
+    "minutes_trend": 4.9136949997402235,
+    "opp_3p_pct_allowed": 0.3625894886363636,
+    "opp_pace": 99.37435369318183,
+    "is_home": 0.4865056818181818,
+    "blowout_flag": 0.22869318181818182,
+    "def_tier_ord": 1.0419034090909092
+  }
+}

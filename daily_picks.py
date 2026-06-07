@@ -20,29 +20,43 @@ import difflib
 import subprocess
 
 # ==============================================================================
-# REGRESSION MODEL (v2) — loaded once at startup; soft dependency on joblib
+# REGRESSION MODEL (v2.1) — loaded once at startup; soft dependency on joblib
 # ==============================================================================
 
-MODEL_PKL  = "model_regression.pkl"
-MODEL_META = "model_features.json"
+MODEL_PKL        = "model_regression.pkl"
+MODEL_META       = "model_features.json"
+PLAYER_RATES_PKL = "player_regression_rates.json"
 
-_REGRESSION_PIPELINE = None   # sklearn Pipeline (StandardScaler + LogReg)
-_REGRESSION_META     = None   # {"features": [...], "train_means": {...}}
+_REGRESSION_MODEL  = None   # GradientBoosting / XGBoost / LogReg pipeline
+_REGRESSION_META   = None   # {"features": [...], "train_means": {...}}
+_PLAYER_RATES      = None   # {"global_mean": float, "players": {name: rate}}
 
 
 def _load_regression_model():
-    """Load the trained logistic regression pipeline from disk (if available)."""
-    global _REGRESSION_PIPELINE, _REGRESSION_META
+    """Load the trained regression model + player rate lookup from disk."""
+    global _REGRESSION_MODEL, _REGRESSION_META, _PLAYER_RATES
     try:
         import joblib  # Anaconda env only; not in system python3.11
         if os.path.exists(MODEL_PKL) and os.path.exists(MODEL_META):
-            _REGRESSION_PIPELINE = joblib.load(MODEL_PKL)
+            _REGRESSION_MODEL = joblib.load(MODEL_PKL)
             with open(MODEL_META) as fh:
                 _REGRESSION_META = json.load(fh)
-            print(f"  🤖 v2 regression model loaded  "
-                  f"({len(_REGRESSION_META['features'])} features)")
+            model_type = _REGRESSION_META.get("model_type", "model")
+            print(f"  🤖 v2.1 model loaded  ({model_type}, "
+                  f"{len(_REGRESSION_META['features'])} features)")
         else:
             print(f"  ℹ️  Regression model files not found — skipping v2 scoring")
+            return
+
+        # Load player regression rate lookup (new in v2.1)
+        if os.path.exists(PLAYER_RATES_PKL):
+            with open(PLAYER_RATES_PKL) as fh:
+                _PLAYER_RATES = json.load(fh)
+            n = len(_PLAYER_RATES.get("players", {}))
+            print(f"  🤖 Player regression rates loaded  ({n} players)")
+        else:
+            print(f"  ℹ️  player_regression_rates.json not found — using global mean")
+
     except ImportError:
         print("  ℹ️  joblib not available in this Python env — skipping v2 scoring")
     except Exception as exc:
@@ -51,15 +65,19 @@ def _load_regression_model():
 
 def score_regression_probability(pick: dict) -> float | None:
     """
-    Return P(regression towards fair line) from the trained logistic regression.
+    Return P(regression towards fair line) from the v2.1 model.
 
-    Uses available pick fields for known features; imputes contextual features
-    (opponent defense, pace, home/away) with training-set means, so they
-    contribute zero variance to the prediction.
+    New in v2.1:
+      • player_regression_rate — looked up from player_regression_rates.json
+      • season_position — proxy: current_games / 82 (normalised 0→1)
+
+    Contextual features (opp defense, pace, home/away) are imputed with
+    training-set means — they contribute zero variance to the prediction
+    but keep the feature vector the right shape.
 
     Returns None if the model is not loaded.
     """
-    if _REGRESSION_PIPELINE is None or _REGRESSION_META is None:
+    if _REGRESSION_MODEL is None or _REGRESSION_META is None:
         return None
     try:
         features = _REGRESSION_META["features"]
@@ -67,25 +85,41 @@ def score_regression_probability(pick: dict) -> float | None:
 
         gap = pick["recent_avg"] - pick["baseline_avg"]
 
-        # Build feature dict — known values from pick; unknown imputed with means
+        # Feature 1 — player regression rate (v2.1)
+        player_rate = means.get("player_regression_rate",
+                                means.get("global_mean", 0.746))
+        if _PLAYER_RATES:
+            lookup = _PLAYER_RATES.get("players", {})
+            global_mean = _PLAYER_RATES.get("global_mean", player_rate)
+            player_rate = lookup.get(pick["player"], global_mean)
+
+        # Feature 2 — season position proxy (v2.1)
+        # current_games from pick (how many games baseline is built from)
+        # normalised to 0–1 scale using 82-game regular season
+        current_games = pick.get("current_games", 41)  # default mid-season
+        season_position = min(float(current_games) / 82.0, 1.0)
+
+        # Build full feature vector
         feat_vals = {
-            "gap_from_baseline":   gap,
-            "z_score":             pick["z_score"],
-            "abs_z_score":         abs(gap),
-            "season_avg":          pick["baseline_avg"],
-            "during_hot":          pick["recent_avg"],
-            "minutes_trend":       pick.get("minutes_trend",
-                                            means.get("minutes_trend", 0.0)),
-            # contextual — not fetched in daily workflow, use training means
-            "opp_3p_pct_allowed":  means.get("opp_3p_pct_allowed", 0.363),
-            "opp_pace":            means.get("opp_pace", 99.4),
-            "is_home":             means.get("is_home", 0.487),
-            "blowout_flag":        means.get("blowout_flag", 0.229),
-            "def_tier_ord":        means.get("def_tier_ord", 1.042),
+            "gap_from_baseline":        gap,
+            "z_score":                  pick["z_score"],
+            "abs_z_score":              abs(gap),
+            "season_avg":               pick["baseline_avg"],
+            "during_hot":               pick["recent_avg"],
+            "minutes_trend":            pick.get("minutes_trend",
+                                                 means.get("minutes_trend", 0.0)),
+            "player_regression_rate":   player_rate,
+            "season_position":          season_position,
+            # contextual — not fetched in daily workflow; use training means
+            "opp_3p_pct_allowed":       means.get("opp_3p_pct_allowed", 0.363),
+            "opp_pace":                 means.get("opp_pace", 99.4),
+            "is_home":                  means.get("is_home", 0.487),
+            "blowout_flag":             means.get("blowout_flag", 0.229),
+            "def_tier_ord":             means.get("def_tier_ord", 1.042),
         }
 
         X = np.array([[feat_vals.get(f, means.get(f, 0.0)) for f in features]])
-        prob = float(_REGRESSION_PIPELINE.predict_proba(X)[0, 1])
+        prob = float(_REGRESSION_MODEL.predict_proba(X)[0, 1])
         return round(prob, 3)
     except Exception:
         return None
@@ -713,7 +747,7 @@ def main():
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     
     print(f"\n{'#'*70}")
-    print(f"#  BETTING THE REGRESSION — daily_picks.py v1.3")
+    print(f"#  BETTING THE REGRESSION — daily_picks.py v1.4")
     print(f"#  Running on {today}")
     print(f"#  Auto-grading yesterday ({yesterday})")
     print(f"{'#'*70}")

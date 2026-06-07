@@ -1,8 +1,6 @@
-metric,rule_based,logistic_regression
-Accuracy,73.9%,73.9%
-Precision,—,73.9%
-Recall,—,100.0%
-F1,—,0.850
-ROC-AUC,—,0.539
-Training seasons,2022-25,2022-24 only
-Validation,proxy backtest (all yrs),2024-25 holdout
+model,accuracy,roc_auc,notes
+Rule-based (z > 1.0),73.9%,---,Baseline
+Logistic original (v2.0),73.9%,0.538,11 features
+Logistic new features (v2.1),71.0%,0.532,+ player rate + season position
+GradientBoosting,72.0%,0.580,All 13 features
+XGBoost,71.3%,0.560,All 13 features

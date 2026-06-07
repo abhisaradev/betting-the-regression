@@ -10,7 +10,9 @@
     "opp_pace",
     "is_home",
     "blowout_flag",
-    "def_tier_ord"
+    "def_tier_ord",
+    "player_regression_rate",
+    "season_position"
   ],
   "train_means": {
     "gap_from_baseline": 1.7719436553030299,
@@ -23,6 +25,10 @@
     "opp_pace": 99.37435369318183,
     "is_home": 0.4865056818181818,
     "blowout_flag": 0.22869318181818182,
-    "def_tier_ord": 1.0419034090909092
-  }
+    "def_tier_ord": 1.0419034090909092,
+    "player_regression_rate": 0.7303148044719318,
+    "season_position": 0.5
+  },
+  "model_type": "GradientBoosting",
+  "best_auc": 0.5801
 }

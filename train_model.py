@@ -242,7 +242,20 @@ print("  ✅ player_regression_rates.json saved")
 print(f"\n\n3.  FEATURE ENGINEERING\n{DASH}")
 
 def add_season_position(df: pd.DataFrame) -> pd.DataFrame:
-    """Within-player row rank normalised 0→1 as season-position proxy."""
+    """
+    Add a 'season_position' column: a number from 0.0 to 1.0 indicating where
+    each hot-streak event falls within that player's season for that stat.
+
+    0.0 = first event in the season, 1.0 = last event.  Mid-season events
+    get values in between.  If a player only had one event, position defaults
+    to 0.5 (middle of season).
+
+    Why it matters: regression might be more reliable late in the season
+    (larger sample, established baseline) vs. early (small sample).
+
+    Groups by player AND stat so position resets when the stat type changes —
+    e.g. a player's FG3M position doesn't bleed into their PTS position.
+    """
     d = df.copy()
     # Group by player AND stat so position resets per stat type
     d["_rank"] = d.groupby(["player", "stat"]).cumcount()
@@ -390,6 +403,19 @@ val_stat_col = val_clean["stat"].values
 
 def print_metrics(label, y_true, y_pred, y_proba, stat_col=None,
                   baseline_acc=None) -> dict:
+    """
+    Print a full model evaluation report and return the key metrics as a dict.
+
+    label        — name to show in the report header (e.g. "GradientBoosting-100")
+    y_true       — array of ground-truth labels (0=no regression, 1=regression)
+    y_pred       — array of model predictions
+    y_proba      — array of predicted probabilities for class 1 (used for AUC)
+    stat_col     — optional array of stat names (FG3M / PTS / …) — when provided,
+                   also prints a per-stat accuracy breakdown table
+    baseline_acc — what "predict-all-regression" gets you (shown for comparison)
+
+    Returns dict with keys: accuracy, auc, precision, recall, f1, label.
+    """
     acc  = accuracy_score(y_true, y_pred)
     prec = precision_score(y_true, y_pred, zero_division=0)
     rec  = recall_score(y_true, y_pred, zero_division=0)
@@ -443,6 +469,19 @@ def print_metrics(label, y_true, y_pred, y_proba, stat_col=None,
 
 
 def print_calibration(y_true, y_proba):
+    """
+    Show how well the model's confidence scores actually match reality.
+
+    Splits predictions into buckets by confidence threshold (≥80%, ≥75%, etc.)
+    and shows what fraction of those high-confidence picks actually regressed.
+
+    A well-calibrated model at ≥80% confidence should see ~80% actual
+    regression.  If it's much lower, the model is overconfident.  If it's
+    higher, the model is conservative.
+
+    y_true  — ground-truth labels (0/1 array)
+    y_proba — predicted probabilities from predict_proba()[:, 1]
+    """
     print(f"\n  Probability calibration:")
     print(f"  Threshold | Picks  | Actual regressed %")
     print(f"  ----------|--------|-------------------")
@@ -458,6 +497,19 @@ def print_calibration(y_true, y_proba):
 
 
 def print_importances(model, features, new_set):
+    """
+    Print a ranked list of how much each feature contributed to the model's decisions.
+
+    Feature importance (for GradientBoosting/XGBoost) measures how often a
+    feature was used to split the data and how much that improved predictions.
+    Higher = more influential.
+
+    model    — the trained sklearn/xgboost model
+    features — list of feature names in the same order they were passed to fit()
+    new_set  — set of feature names added in v2.2 (flagged with '← NEW' in output)
+
+    Does nothing if the model doesn't have feature_importances_ (e.g. LogReg).
+    """
     if not hasattr(model, "feature_importances_"):
         return
     imp = model.feature_importances_

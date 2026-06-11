@@ -1,0 +1,8 @@
+player,stat,status,tier,fair_line,bookmaker_line,gap,threshold_met,bet_recommendation,date,fixture,source
+De'Aaron Fox,PRA,COLD,STRONG,34.66,23.5,11.16,True,bet OVER if line < 30.0,2026-06-08,San Antonio Spurs @ New York Knicks,ESPN/DraftKings
+De'Aaron Fox,PTS,COLD,MODERATE,23.53,14.5,9.03,True,bet OVER if line < 19.3,2026-06-08,San Antonio Spurs @ New York Knicks,ESPN/DraftKings
+Julian Champagnie,FG3M,HOT,MODERATE,2.65,2.5,-0.15,False,bet UNDER if line > 3.4,2026-06-08,San Antonio Spurs @ New York Knicks,ESPN/DraftKings
+Landry Shamet,PTS,HOT,WEAK,6.62,8.5,1.88,False,bet UNDER if line > 9.8,2026-06-08,San Antonio Spurs @ New York Knicks,ESPN/DraftKings
+Landry Shamet,PRA,HOT,WEAK,8.19,11.5,3.31,False,bet UNDER if line > 11.7,2026-06-08,San Antonio Spurs @ New York Knicks,ESPN/DraftKings
+Josh Hart,PTS,COLD,WEAK,10.19,9.5,0.69,False,bet OVER if line < 7.0,2026-06-08,San Antonio Spurs @ New York Knicks,ESPN/DraftKings
+Landry Shamet,FG3M,HOT,WEAK,1.69,1.5,-0.19,False,bet UNDER if line > 2.5,2026-06-08,San Antonio Spurs @ New York Knicks,ESPN/DraftKings

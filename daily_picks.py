@@ -36,7 +36,19 @@ _PLAYER_RATES      = None   # {"global_mean": float, "players": {name: rate}}
 
 
 def _load_regression_model():
-    """Load the trained regression model + player rate lookup from disk."""
+    """
+    Load the trained GradientBoosting model and supporting files from disk into
+    global variables so they're available for every pick scored today.
+
+    Loads three files:
+      model_regression.pkl           — the sklearn pipeline (scaler + classifier)
+      model_features.json            — feature list + training means used for imputation
+      player_regression_rates.json   — per-player historical regression rates
+
+    Uses joblib for the pkl file (Anaconda environment only).
+    Fails silently if files are missing or joblib isn't installed — the tool
+    still works, it just skips v2 probability scores.
+    """
     global _REGRESSION_MODEL, _REGRESSION_META, _PLAYER_RATES
     try:
         import joblib  # Anaconda env only; not in system python3.11
@@ -271,6 +283,17 @@ def _check_returning(recent_df):
 # ==============================================================================
 
 def get_games_for_date(date_str, league_id):
+    """
+    Return a list of upcoming (not yet started) games for the given date and league.
+
+    date_str  — "YYYY-MM-DD"
+    league_id — NBA_LEAGUE_ID ("00") or WNBA_LEAGUE_ID ("10")
+
+    Filters out games already in progress or final so we don't generate picks
+    for games that have already tipped off.  Each game dict has:
+      game_id, home_team_id, away_team_id, game_status
+    Returns an empty list if no upcoming games or if the API call fails.
+    """
     try:
         scoreboard = scoreboardv3.ScoreboardV3(
             game_date=date_str,
@@ -297,6 +320,14 @@ def get_games_for_date(date_str, league_id):
 
 
 def find_next_game_date(start_date_str, days_ahead=14):
+    """
+    Scan forward from start_date_str until a day with NBA or WNBA games is found.
+
+    Checks up to days_ahead days into the future.  Returns a human-readable
+    string like "2026-06-11 — NBA (2 games), WNBA (3 games)" so the terminal
+    output tells you when to run the tool next.  Returns None if no games are
+    found within the window (rare — usually the off-season).
+    """
     start = datetime.strptime(start_date_str, "%Y-%m-%d")
     for i in range(1, days_ahead + 1):
         check_date = (start + timedelta(days=i)).strftime("%Y-%m-%d")
@@ -314,6 +345,13 @@ def find_next_game_date(start_date_str, days_ahead=14):
 
 
 def get_team_roster_safe(team_id, season):
+    """
+    Fetch the roster for one team and season from the NBA API.
+
+    Returns a DataFrame with PLAYER_NAME and PLAYER_ID columns.
+    On any error (network timeout, unknown team, etc.) returns an empty
+    DataFrame so the calling loop can skip this team without crashing.
+    """
     try:
         roster = commonteamroster.CommonTeamRoster(team_id=team_id, season=season)
         df = roster.get_data_frames()[0]
@@ -324,6 +362,17 @@ def get_team_roster_safe(team_id, season):
 
 
 def get_player_gamelog(player_id, season, season_type):
+    """
+    Pull a player's game-by-game log from the NBA API and return it as a DataFrame.
+
+    player_id   — NBA player ID (integer)
+    season      — season string like "2025-26"
+    season_type — "Regular Season" or "Playoffs"
+
+    Adds a PRA column (Points + Rebounds + Assists) computed on the fly.
+    Sorts games chronologically (oldest first) so rolling averages work correctly.
+    Returns None on any error or if the player has no logged games that season.
+    """
     try:
         log = playergamelog.PlayerGameLog(
             player_id=player_id,
@@ -346,6 +395,28 @@ def get_player_gamelog(player_id, season, season_type):
 # ==============================================================================
 
 def get_player_baseline(player_id, current_season, previous_season):
+    """
+    Decide which games to use as the 'true skill' baseline for a player.
+
+    The right baseline changes through the year:
+      Playoffs (5+ games):  use playoff games only — these are the most
+                            relevant to tonight's game context.
+      Full season (40+ games current RS): use current season only — enough
+                            data to have a reliable average.
+      Mid-season (20-39 games current RS): blend current + previous season
+                            60/40 (3 parts current, 2 parts previous) to
+                            stabilise the average while it's still small.
+      Early season (<20 games current RS): fall back to last year's full
+                            season if available (20+ games), because this
+                            year's sample is too small to be reliable.
+      No data: return None to skip this player entirely.
+
+    Returns:
+      baseline_df    — DataFrame of games to compute the season average from
+      baseline_label — human-readable description of what was used, e.g.
+                       "blended (25cur + 72prev)"
+      current_games  — integer count of current regular-season games played
+    """
     current_rs = get_player_gamelog(player_id, current_season, "Regular Season")
     current_po = get_player_gamelog(player_id, current_season, "Playoffs")
     previous_rs = get_player_gamelog(player_id, previous_season, "Regular Season")
@@ -408,6 +479,22 @@ def get_bet_recommendation(status, fair_line, season_std):
 
 
 def analyze_player(player_name, player_id, current_season, previous_season):
+    """
+    Run the full hot/cold streak analysis for one player across all tracked stats.
+
+    Steps:
+      1. Get the player's baseline (true skill level) using get_player_baseline()
+      2. Get their 3 most recent games (from playoffs if in playoffs, else RS)
+      3. For each stat (FG3M, PTS, PRA): compute season average, std, rolling
+         3-game average, and z-score
+      4. Classify each stat as HOT (z > 0, above threshold), COLD (z < 0,
+         above threshold), or NORMAL
+      5. Compute the bet recommendation threshold for HOT/COLD picks
+
+    Returns a flat dict with keys like FG3M_status, FG3M_zscore, FG3M_fair_line,
+    plus player-level info (recent_mpg, baseline_used, returning flag).
+    Returns None if the player doesn't have enough recent data to analyse.
+    """
     baseline_df, baseline_label, current_games = get_player_baseline(
         player_id, current_season, previous_season
     )
@@ -476,6 +563,25 @@ def analyze_player(player_name, player_id, current_season, previous_season):
 # ==============================================================================
 
 def grade_predictions_from_date(date_str):
+    """
+    Grade yesterday's predictions against actual game results.
+
+    Reads daily_predictions.csv, finds picks for date_str, then fetches the
+    actual stat from each player's game log for that date.  Scores each pick
+    using the proxy backtest methodology:
+
+      WIN  — actual outcome was closer to our fair_line (season avg) than to
+              the recent_avg (the hot-streak line) — our mean-reversion call
+              was correct
+      LOSS — actual outcome was closer to the recent_avg
+      PUSH — equidistant (rare)
+      DNP  — player didn't play (game log for that date came back empty)
+
+    Appends results to graded_predictions.csv and updates model_performance.csv
+    (overall) and model_performance_by_stat.csv (FG3M / PTS / PRA breakdown).
+
+    Returns nothing — all output is written to CSVs and printed to terminal.
+    """
     if not os.path.exists(PREDICTIONS_FILE):
         return
     
@@ -604,6 +710,22 @@ def grade_predictions_from_date(date_str):
 # ==============================================================================
 
 def run_for_league(league_name, league_id, current_season, previous_season, today_str):
+    """
+    Run the full pick-generation pipeline for one league (NBA or WNBA).
+
+    For each game tonight:
+      1. Gets rosters for both teams
+      2. Runs analyze_player() on every player in those rosters
+      3. Filters out players averaging fewer than MIN_RECENT_MPG minutes (15)
+      4. Checks the injury report — OUT players are removed entirely;
+         DOUBTFUL/GTD players are flagged; returning players are demoted to WEAK
+      5. For each player's HOT/COLD stat, scores a regression probability from
+         the v2 GradientBoosting model (FG3M picks only)
+      6. Collects all flagged picks into a list
+
+    Returns a list of pick dicts, one per player-stat pair that met the threshold.
+    Returns an empty list if no games tonight or no players qualified.
+    """
     print(f"\n{'='*70}")
     print(f"  {league_name} — {today_str}")
     print(f"{'='*70}")
@@ -750,6 +872,20 @@ def print_summary_pick(pick):
 
 
 def main():
+    """
+    Entry point for the daily prediction workflow.
+
+    Runs in this order:
+      1. Load the v2 ML model (soft dependency — skipped if joblib unavailable)
+      2. Check whether picks already exist for today and prompt to replace if so
+      3. Grade yesterday's predictions against actual results
+      4. Run pick generation for NBA and WNBA
+      5. Sort picks by tier (STRONG → MODERATE → WEAK), then by z-score
+      6. Print the pick report to terminal
+      7. Save picks to daily_predictions.csv for odds_compare.py to read
+
+    Intended to be run once per day before games start (e.g. by 5 PM ET).
+    """
     today = datetime.now().strftime("%Y-%m-%d")
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     

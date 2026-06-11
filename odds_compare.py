@@ -73,7 +73,16 @@ def parse_baseline_games(baseline_used):
 # ==============================================================================
 
 def espn_get(path, params=None):
-    """GET an ESPN core API path. Uses curl -sk for SSL compatibility."""
+    """
+    Fetch data from ESPN's internal core API (sports.core.api.espn.com).
+
+    Takes a relative path like 'events/12345/odds/100/propBets' and appends
+    the standard English/US locale params before calling _curl_json.
+    Optional params dict adds extra key=value pairs to the URL.
+
+    Returns parsed JSON as a Python dict.
+    Raises RuntimeError if curl fails or the response isn't valid JSON.
+    """
     base = "lang=en&region=us"
     extra = "&" + "&".join(f"{k}={v}" for k, v in (params or {}).items())
     url = f"{ESPN_BASE}/{path}?{base}{extra}"
@@ -81,11 +90,23 @@ def espn_get(path, params=None):
 
 
 def espn_get_url(url):
-    """GET an absolute ESPN URL. Used for following $ref links."""
+    """
+    Fetch an absolute URL (not a relative path).  Used when ESPN's API returns
+    '$ref' links that point to other resources — e.g. venue or athlete endpoints.
+    Passes the full URL directly to _curl_json.
+    """
     return _curl_json(url)
 
 
 def _curl_json(url):
+    """
+    The actual HTTP call.  Uses curl instead of the requests library because
+    ESPN's API has SSL certificate issues on some Python versions that curl
+    handles gracefully with the -sk flags (skip verification, silent mode).
+
+    Returns parsed JSON as a Python dict.
+    Raises RuntimeError with a descriptive message on curl failure or bad JSON.
+    """
     result = subprocess.run(
         ["curl", "-sk", "--max-time", "10", url],
         capture_output=True, text=True
@@ -268,7 +289,15 @@ def fetch_game_info(event_id, home_team, away_team):
 
 
 def fetch_prop_bets(event_id):
-    """Fetch all DraftKings prop bets for an event (all pages)."""
+    """
+    Fetch all DraftKings player prop bets for tonight's game from ESPN's API.
+
+    ESPN paginates prop bets 200 per page.  This function loops through all
+    pages until it has everything.  Returns a flat list of raw prop-bet dicts
+    (not yet filtered to our stat types or matched to players).
+
+    event_id — the ESPN event ID found by find_nba_event()
+    """
     all_items = []
     page = 1
     while True:
@@ -285,7 +314,15 @@ def fetch_prop_bets(event_id):
 
 
 def resolve_athlete_names(athlete_ids):
-    """Resolve ESPN athlete IDs → display names."""
+    """
+    Look up the display name for each ESPN athlete ID.
+
+    ESPN's prop bet API returns athlete IDs like '4065648' rather than names.
+    This function fetches each player's profile from ESPN's athletes endpoint
+    and returns a dict of {athlete_id_string: display_name}.
+
+    Sleeps 100ms between requests to be polite to the API.
+    """
     names = {}
     for aid in sorted(athlete_ids):
         d = espn_get(f"seasons/2026/athletes/{aid}")
@@ -296,8 +333,18 @@ def resolve_athlete_names(athlete_ids):
 
 def extract_prop_lines(prop_bets, athlete_names):
     """
-    Walk ESPN prop bets → { (norm_player_name, stat): median_line }.
-    Each player has Over + Under entries with the same line; deduplicate via median.
+    Parse the raw ESPN prop-bet list into a clean lookup of player+stat → line.
+
+    ESPN returns separate Over and Under entries for each player, both pointing
+    to the same line value.  This function:
+      1. Filters to only the stat types we care about (FG3M, PTS, PRA)
+      2. Looks up each athlete's name from the ID we already resolved
+      3. Takes the median of all line values for the same player+stat pair
+         (deduplicates Over/Under and handles multiple book offerings)
+      4. Normalises the player name for fuzzy matching later
+
+    Returns dict: { (normalised_player_name, stat_string): line_float }
+    Example: { ('damian lillard', 'FG3M'): 2.5 }
     """
     raw = {}
     for item in prop_bets:
@@ -333,10 +380,29 @@ def extract_prop_lines(prop_bets, athlete_names):
 # ==============================================================================
 
 def normalise_name(name):
+    """
+    Strip punctuation and lowercase a player name for fuzzy matching.
+    'Ja Morant' → 'ja morant', "D'Angelo Russell" → 'dangelo russell'
+    """
     return re.sub(r"[^a-z0-9 ]", "", name.lower()).strip()
 
 
 def best_match(target, candidates, threshold=NAME_MATCH_THRESHOLD):
+    """
+    Fuzzy-match a player name against a list of candidate names.
+
+    Uses Python's difflib SequenceMatcher (similar to Levenshtein distance)
+    to handle slight spelling differences between the NBA API names we have
+    and the ESPN API names on the prop bet side.  Examples:
+      'Nicolas Claxton' vs 'Nic Claxton' — might not match
+      'DAngelo Russell' vs 'D'Angelo Russell' — will match after normalisation
+
+    target     — the name we're looking for (from our predictions CSV)
+    candidates — list of normalised player names from ESPN prop bets
+    threshold  — minimum similarity score to count as a match (0.75 = 75% similar)
+
+    Returns (best_match_string, score) or (None, 0.0) if no match found above threshold.
+    """
     t = normalise_name(target)
     best, score = None, 0.0
     for c in candidates:
@@ -351,6 +417,19 @@ def best_match(target, candidates, threshold=NAME_MATCH_THRESHOLD):
 # ==============================================================================
 
 def compute_gap(status, fair_line, book_line):
+    """
+    Compute the edge gap — how far the sportsbook's line is from our fair line.
+
+    For a HOT player: gap = book_line - fair_line
+      Positive gap means DraftKings set the line above our true-avg estimate,
+      which is what we want — we're betting UNDER that inflated line.
+
+    For a COLD player: gap = fair_line - book_line
+      Positive gap means DraftKings set the line below our estimate,
+      which is what we want — we're betting OVER that deflated line.
+
+    Returns a positive float for a genuine edge, negative if no edge.
+    """
     if status == "HOT":
         return round(book_line - fair_line, 2)
     elif status == "COLD":
@@ -359,11 +438,29 @@ def compute_gap(status, fair_line, book_line):
 
 
 def parse_threshold(bet_rec):
+    """
+    Extract the numeric trigger value from a bet recommendation string.
+    'bet UNDER if line > 3.1'  →  3.1
+    'bet OVER if line < 12.5'  →  12.5
+    Returns None if no number found (shouldn't happen in normal operation).
+    """
     m = re.search(r"[\d.]+$", str(bet_rec))
     return float(m.group()) if m else None
 
 
 def threshold_crossed(status, book_line, threshold):
+    """
+    Return True if the DraftKings book line has crossed our action threshold.
+
+    For HOT players: threshold_crossed when book_line > our trigger.
+      This means DK set the line higher than our fair_line + buffer, so
+      betting UNDER has a clear edge.
+    For COLD players: threshold_crossed when book_line < our trigger.
+      This means DK set the line lower than our fair_line - buffer, so
+      betting OVER has a clear edge.
+
+    Returns False if threshold is None (couldn't parse the recommendation).
+    """
     if threshold is None:
         return False
     return book_line > threshold if status == "HOT" else book_line < threshold
@@ -377,6 +474,12 @@ TIER_ORDER = {"STRONG": 0, "MODERATE": 1, "WEAK": 2}
 
 
 def print_edge_row(row):
+    """
+    Print one pick's edge report to terminal in a consistent format.
+
+    Shows: player name, tier, our fair line, DK's book line, edge gap,
+    bet action, and a ⭐ star if the action threshold has been crossed.
+    """
     icon = "🔥" if row["status"] == "HOT" else "❄️"
     star = "⭐ " if row["threshold_met"] else "   "
     print(f"\n  {star}{icon} [{row['tier']}] {row['player']} — {row['stat']}")
@@ -411,6 +514,8 @@ def generate_dashboard(picks, game_info, date_str, model_record=None, all_injuri
     record_json   = json.dumps(model_record,        ensure_ascii=False)
     injuries_json = json.dumps(all_injuries or [],  ensure_ascii=False)
     fixture       = f"{game_info.get('away_team','')} @ {game_info.get('home_team','')}"
+    # Python-injected timestamp so it stays fixed even if the file is reopened later
+    generated_at  = datetime.now().strftime("%b %d, %Y at %-I:%M %p")
 
     # Read per-stat performance CSV and aggregate totals per stat
     STAT_PERF_FILE = "model_performance_by_stat.csv"
@@ -721,6 +826,22 @@ input[type=number]{width:82px}
   select{min-width:0;width:100%}
   .game{flex-direction:column;align-items:flex-start}
 }
+
+/* ── Print layout (Cmd+P) — picks only, no paper trading ── */
+@media print {
+  .paper, .how, .arow, .bform, #hist-sec, .chart-wrap { display: none !important; }
+  .snap-btn { display: none !important; }
+  body { background: #fff !important; color: #000 !important; font-size: 12px; }
+  .pick { border: 1px solid #ccc !important; border-left-width: 3px !important;
+          box-shadow: none !important; margin-bottom: 6px; }
+  .pick.hot  { border-left-color: #1D9E75 !important; }
+  .pick.cold { border-left-color: #378ADD !important; }
+  .mc, .sp-card, .inj-sec { border: 1px solid #ccc !important; }
+  .wrap { max-width: 100%; padding: 8px; }
+  .abtn { display: none !important; }
+  .nc-val, .bank-amt, .mc-val { color: #000 !important; }
+  a { text-decoration: none; }
+}
 </style>
 </head>
 <body>
@@ -729,9 +850,15 @@ input[type=number]{width:82px}
   <!-- Header -->
   <div class="hdr">
     <h1>Betting the Regression</h1>
-    <span class="hdate">__DATE__</span>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="hdate">__DATE__</span>
+      <button class="snap-btn" onclick="saveSnapshot()"
+        style="font-size:11px;padding:3px 10px;border:1px solid var(--border);
+               border-radius:5px;background:var(--bg-raised);color:var(--text-2);
+               cursor:pointer;font-family:inherit">&#128190; Save snapshot</button>
+    </div>
   </div>
-  <p class="sub">Lines from DraftKings via ESPN &middot; no auth required</p>
+  <p class="sub">Lines from DraftKings via ESPN &middot; no auth required &middot; Generated __GENERATED_AT__</p>
 
   <!-- How it works -->
   <div class="how">
@@ -1314,6 +1441,22 @@ function renderAll() {
   syncUndoRedo();
 }
 
+// ── Snapshot download ────────────────────────────────────────────────────────
+function saveSnapshot() {
+  // Capture the full current page (including paper bets in localStorage state)
+  // and download it as a self-contained HTML file named by today's date.
+  const dateTag = '__DATE__'.replace(/-/g, '');
+  const fname   = 'dashboard_snapshot_' + dateTag + '.html';
+  const blob    = new Blob([document.documentElement.outerHTML], {type: 'text/html'});
+  const a       = document.createElement('a');
+  a.href        = URL.createObjectURL(blob);
+  a.download    = fname;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadState();
 renderInjuries();
@@ -1334,6 +1477,7 @@ renderAll();
     html = html.replace("__STAT_PERF_JSON__", stat_perf_json)
     html = html.replace("__DATE__",           date_str)
     html = html.replace("__FIXTURE__",        fixture)
+    html = html.replace("__GENERATED_AT__",   generated_at)
 
     with open(DASHBOARD_FILE, "w", encoding="utf-8") as fh:
         fh.write(html)
@@ -1348,6 +1492,26 @@ renderAll();
 # ==============================================================================
 
 def main():
+    """
+    Full pipeline: load picks → find ESPN event → fetch DK lines → match →
+    compute gaps → rank → save CSV → fetch injuries → generate dashboard.
+
+    Runs in 13 steps:
+      1.  Load today's NBA predictions from daily_predictions.csv
+          (falls back to most recent pick date if today is missing)
+      2.  Find tonight's NBA event on ESPN
+      3.  Fetch all DraftKings prop bets for that event via ESPN's API
+      4.  Resolve athlete IDs → display names
+      5.  Extract the line values into a (player, stat) → line lookup
+      6.  Fuzzy-match our predicted players to ESPN's prop-bet players
+      7.  Compute edge gaps and check action thresholds
+      8.  Print the ranked edge report to terminal
+      9.  Save edge report to odds_comparison_{date}.csv
+      10. Fetch injury report for tonight's teams
+      11. Annotate picks with injury flags
+      12. Fetch game metadata (tip-off time, venue, series record)
+      13. Generate dashboard.html and open it in the browser
+    """
     print(f"\n{'#'*70}")
     print(f"#  BETTING THE REGRESSION — ODDS COMPARISON  [ESPN/DRAFTKINGS]")
     print(f"#  {TODAY}")

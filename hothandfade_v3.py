@@ -19,7 +19,17 @@ import time
 # ==============================================================================
 
 def get_role_players(season="2024-25", min_mpg=15, max_mpg=32, min_3pa=2.0, min_gp=30):
-    """Pull all players who fit the 'role player' profile."""
+    """
+    Pull all NBA players who fit the 'role player' profile for FG3M analysis.
+
+    Role players are defined as:
+      15-32 MPG  — play real minutes but aren't stars (stars' lines are priced
+                   efficiently; role players have more mispriced lines)
+      2+ 3PA/g   — actively shoot threes (otherwise FG3M data is noise)
+      30+ games  — enough sample to compute a reliable season average
+
+    Returns a DataFrame with PLAYER_ID, PLAYER_NAME, MIN, FG3A, FG3M, GP.
+    """
     print(f"Pulling role players for {season}...")
     league_stats = leaguedashplayerstats.LeagueDashPlayerStats(
         season=season,
@@ -38,7 +48,20 @@ def get_role_players(season="2024-25", min_mpg=15, max_mpg=32, min_3pa=2.0, min_
 
 def analyze_player(player_name, season="2024-25", stat="FG3M",
                    hot_threshold=1.0, cold_threshold=-1.0):
-    """Analyze mean reversion pattern for one player."""
+    """
+    Compute aggregate mean reversion stats for one player in one season.
+
+    For every game in the player's log, computes a rolling 3-game average and
+    z-score.  Splits games into HOT (z > hot_threshold), COLD (z < cold_threshold),
+    and NORMAL buckets, then measures how much the player regressed toward their
+    season average in the next game.
+
+    Returns a dict with player, season_avg, and hot/cold/normal counts and
+    average regression amounts.  Returns None if fewer than 20 games found.
+
+    This is the fast 'summary' version — for per-event detail (needed for the
+    ML training CSV), use analyze_player_full_confounders() instead.
+    """
     player_dict = players.find_players_by_full_name(player_name)
     if not player_dict:
         return None
@@ -77,7 +100,19 @@ def analyze_player(player_name, season="2024-25", stat="FG3M",
 
 
 def run_season_analysis(season):
-    """Run role-player analysis for one season."""
+    """
+    Run the aggregate mean-reversion analysis for every role player in a season.
+
+    Pulls the full role-player pool for that season, then calls analyze_player()
+    on each one.  Errors for individual players are caught silently so one
+    broken API call doesn't abort the whole season.
+
+    Returns:
+      results_df — DataFrame with one row per player showing hot/cold/normal
+                   regression stats
+      pool       — the original role-player pool DataFrame (needed for subgroup
+                   analysis later)
+    """
     pool = get_role_players(season=season)
     results = []
     for i, row in pool.iterrows():
@@ -94,7 +129,22 @@ def run_season_analysis(season):
 
 
 def get_team_defensive_data(season="2024-25"):
-    """Pull team-level defensive stats: def rating, opponent 3P%, pace."""
+    """
+    Pull team-level defensive stats needed to analyse whether the opponent
+    matters for hot streak regression.
+
+    Fetches two NBA API endpoints:
+      Advanced stats — defensive rating (points allowed per 100 possessions),
+                       pace (possessions per game)
+      Opponent stats — opponent 3-point percentage (OPP_FG3_PCT)
+
+    Merges them into one table indexed by team abbreviation (e.g. 'BOS', 'LAL'),
+    then adds a 'def_tier' column: Elite (top 10 in defending 3s), Mid (11-20),
+    Bad (21-30).
+
+    Returns a DataFrame indexed by TEAM_ABBR with columns:
+      DEF_RATING, PACE, OPP_FG3_PCT, def_tier
+    """
     print(f"Pulling team defensive data for {season}...")
     team_stats = leaguedashteamstats.LeagueDashTeamStats(
         season=season,
@@ -141,7 +191,28 @@ def get_team_defensive_data(season="2024-25"):
 
 def analyze_player_full_confounders(player_name, team_data, season="2024-25",
                                      stat="FG3M", hot_threshold=1.0):
-    """Capture all confounders per hot streak event."""
+    """
+    Pull every hot-streak event for one player with full contextual detail.
+
+    Unlike analyze_player() which gives one summary row per player, this returns
+    a list of individual event dicts — one for each game where the player was
+    on a hot streak (rolling 3-game z-score > hot_threshold).
+
+    Each event dict includes:
+      during_hot          — rolling 3-game average during the streak
+      next_game_stat      — what they actually did next game (the outcome)
+      regression          — how much they came back down (during_hot - next_game)
+      next_opp            — team abbreviation they played next (e.g. 'BOS')
+      next_location       — 'home' or 'away'
+      opp_def_tier        — 'Elite (top 10)', 'Mid (11-20)', 'Bad (21-30)'
+      opp_3p_pct_allowed  — opponent's FG3% allowed (e.g. 0.362)
+      opp_pace            — opponent's pace (possessions per game)
+      minutes_trend       — recent MPG minus season MPG (positive = trending up)
+      was_blowout_recent  — True if last game's point differential > 15
+
+    team_data must be the DataFrame returned by get_team_defensive_data().
+    Returns empty list if player has fewer than 20 games that season.
+    """
     player_dict = players.find_players_by_full_name(player_name)
     if not player_dict:
         return []
@@ -501,8 +572,23 @@ print("\n\n=== STEP 6: MULTI-SEASON PROXY BACKTEST ===\n")
 
 def build_proxy_backtest_for_season(season):
     """
-    Build the fair-line-vs-naive-line backtest dataset for a single season.
-    Requires re-running the per-event analysis to capture during_hot, season_avg, next_game.
+    Build the complete proxy backtest dataset for a single season.
+
+    For each hot-streak event in the season, computes two competing predictions:
+      your_fair_line  — the player's season average (what the model says is
+                        'true skill'; the regression target)
+      naive_line      — the rolling 3-game average (what casual bettors
+                        would use, inflated during a hot streak)
+
+    Then determines a winner for each event: your_line_wins = True if the
+    actual next-game outcome lands closer to your_fair_line than to naive_line.
+
+    Results are cached to hot_hand_proxy_backtest_{season}.csv so the slow
+    API-heavy computation only runs once.  Subsequent calls load from cache.
+
+    Returns a DataFrame with one row per hot-streak event including
+    your_line_wins (the win/loss label), distances to both lines, and all
+    contextual features.
     """
     output_file = f"hot_hand_proxy_backtest_{season.replace('-', '_')}.csv"
     
@@ -622,8 +708,20 @@ print(f"Total filtered events: {total_filtered_events}")
 def analyze_player_multi_stat(player_name, season="2024-25", stat="PTS",
                                hot_threshold=1.0, cold_threshold=-1.0):
     """
-    Generalized version of analyze_player that handles any stat including combos.
-    For combo stats, computes them on the fly.
+    Generalised version of analyze_player() that works for any stat, including
+    composite stats computed from raw game log data.
+
+    Supported stats beyond the raw NBA API columns:
+      PR  = PTS + REB   (points + rebounds)
+      PA  = PTS + AST   (points + assists)
+      PRA = PTS + REB + AST  (points + rebounds + assists)
+
+    These are computed row-by-row from the game log before the hot-streak
+    detection runs.
+
+    Returns the same summary dict format as analyze_player() (hot/cold/normal
+    counts and average regression amounts), but for the requested stat.
+    Returns None if fewer than 20 games or stat not available.
     """
     player_dict = players.find_players_by_full_name(player_name)
     if not player_dict:
@@ -676,8 +774,17 @@ def analyze_player_multi_stat(player_name, season="2024-25", stat="PTS",
 
 def analyze_player_proxy_for_stat(player_name, season="2024-25", stat="PTS", hot_threshold=1.0):
     """
-    Per-event analysis for the proxy backtest, for any stat including combos.
-    Returns a list of per-event dicts.
+    Per-event proxy backtest analysis for any stat including combo stats.
+
+    Like analyze_player_full_confounders() but without the contextual features
+    (no opponent defense, no home/away, no blowout flag).  Used for the
+    multistat backtest CSVs where we only need the core outcome columns:
+      player, stat, season_avg, during_hot, next_game_stat,
+      your_fair_line, naive_line, actual_outcome,
+      distance_to_yours, distance_to_naive, your_line_wins
+
+    These are the CSV files that train_model.py uses for validation.
+    Returns a list of per-event dicts.  Returns empty list on errors.
     """
     player_dict = players.find_players_by_full_name(player_name)
     if not player_dict:
@@ -739,7 +846,15 @@ stats_to_test = ["PTS", "PR", "PA", "PRA"]
 
 # For non-3P stats, we want a broader pool — players with 15+ MPG and decent volume
 def get_general_role_players(season="2024-25", min_mpg=15, max_mpg=32, min_gp=30):
-    """Role players for general stats (no 3PA filter)."""
+    """
+    Pull NBA role players for analysis of non-3P stats (PTS, PRA, etc.).
+
+    Same as get_role_players() but without the 3PA (three-point attempt) filter,
+    since that filter would exclude many players who don't shoot many threes
+    but still have interesting PTS or PRA hot streaks.
+
+    Returns a DataFrame with PLAYER_ID, PLAYER_NAME, MIN, PTS, REB, AST, GP.
+    """
     print(f"Pulling general role players for {season}...")
     league_stats = leaguedashplayerstats.LeagueDashPlayerStats(
         season=season,

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Betting the Regression &mdash; 2026-06-05</title>
+<title>Betting the Regression &mdash; 2026-06-08</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" crossorigin="anonymous"></script>
 <style>
 :root {
@@ -286,6 +286,22 @@ input[type=number]{width:82px}
   select{min-width:0;width:100%}
   .game{flex-direction:column;align-items:flex-start}
 }
+
+/* ── Print layout (Cmd+P) — picks only, no paper trading ── */
+@media print {
+  .paper, .how, .arow, .bform, #hist-sec, .chart-wrap { display: none !important; }
+  .snap-btn { display: none !important; }
+  body { background: #fff !important; color: #000 !important; font-size: 12px; }
+  .pick { border: 1px solid #ccc !important; border-left-width: 3px !important;
+          box-shadow: none !important; margin-bottom: 6px; }
+  .pick.hot  { border-left-color: #1D9E75 !important; }
+  .pick.cold { border-left-color: #378ADD !important; }
+  .mc, .sp-card, .inj-sec { border: 1px solid #ccc !important; }
+  .wrap { max-width: 100%; padding: 8px; }
+  .abtn { display: none !important; }
+  .nc-val, .bank-amt, .mc-val { color: #000 !important; }
+  a { text-decoration: none; }
+}
 </style>
 </head>
 <body>
@@ -294,9 +310,15 @@ input[type=number]{width:82px}
   <!-- Header -->
   <div class="hdr">
     <h1>Betting the Regression</h1>
-    <span class="hdate">2026-06-05</span>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="hdate">2026-06-08</span>
+      <button class="snap-btn" onclick="saveSnapshot()"
+        style="font-size:11px;padding:3px 10px;border:1px solid var(--border);
+               border-radius:5px;background:var(--bg-raised);color:var(--text-2);
+               cursor:pointer;font-family:inherit">&#128190; Save snapshot</button>
+    </div>
   </div>
-  <p class="sub">Lines from DraftKings via ESPN &middot; no auth required</p>
+  <p class="sub">Lines from DraftKings via ESPN &middot; no auth required &middot; Generated Jun 10, 2026 at 11:06 PM</p>
 
   <!-- How it works -->
   <div class="how">
@@ -315,7 +337,7 @@ input[type=number]{width:82px}
 
   <!-- Game strip -->
   <div class="game">
-    <div class="gteams">New York Knicks @ San Antonio Spurs</div>
+    <div class="gteams">San Antonio Spurs @ New York Knicks</div>
     <div class="gmeta">
       <span id="g-time"></span>
       <span id="g-venue"></span>
@@ -389,8 +411,8 @@ input[type=number]{width:82px}
 
 <script>
 // ── Data injected by Python ─────────────────────────────────────────────────
-const PICKS       = [{"player": "Landry Shamet", "team": "New York Knicks", "stat": "PRA", "status": "HOT", "tier": "STRONG", "fair_line": 7.6, "dk_line": 9.5, "gap": 1.9, "z_score": 1.32, "bet_recommendation": "bet UNDER if line > 11.0", "recent_avg": 16.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 11.0, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "FG3M", "status": "HOT", "tier": "STRONG", "fair_line": 1.6, "dk_line": 1.5, "gap": -0.1, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 2.4", "recent_avg": 3.67, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 2.4, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "PTS", "status": "HOT", "tier": "STRONG", "fair_line": 6.2, "dk_line": 7.5, "gap": 1.3, "z_score": 1.3, "bet_recommendation": "bet UNDER if line > 9.3", "recent_avg": 14.33, "recent_mpg": 26.7, "baseline_games": 15, "threshold": 9.3, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PRA", "status": "COLD", "tier": "MODERATE", "fair_line": 25.76, "dk_line": 24.5, "gap": 1.26, "z_score": -1.18, "bet_recommendation": "bet OVER if line < 22.3", "recent_avg": 17.67, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 22.3, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PTS", "status": "COLD", "tier": "MODERATE", "fair_line": 15.88, "dk_line": 15.5, "gap": 0.38, "z_score": -1.15, "bet_recommendation": "bet OVER if line < 12.9", "recent_avg": 9.0, "recent_mpg": 33.3, "baseline_games": 17, "threshold": 12.9, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Mikal Bridges", "team": "New York Knicks", "stat": "FG3M", "status": "COLD", "tier": "MODERATE", "fair_line": 1.9, "dk_line": 1.5, "gap": 0.4, "z_score": -1.08, "bet_recommendation": "bet OVER if line < 1.2", "recent_avg": 0.33, "recent_mpg": 32.3, "baseline_games": 82, "threshold": 1.2, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Stephon Castle", "team": "San Antonio Spurs", "stat": "FG3M", "status": "COLD", "tier": "WEAK", "fair_line": 1.58, "dk_line": 1.5, "gap": 0.08, "z_score": -0.93, "bet_recommendation": "bet OVER if line < 0.9", "recent_avg": 0.33, "recent_mpg": 34.0, "baseline_games": 19, "threshold": 0.9, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}];
-const GAME_INFO   = {"home_team": "San Antonio Spurs", "away_team": "New York Knicks", "start_time_et": "8:30 PM ET", "venue": "Frost Bank Center, San Antonio", "series_record": "NBA Finals - Game 2", "round_label": "NBA Finals"};
+const PICKS       = [{"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PRA", "status": "COLD", "tier": "STRONG", "fair_line": 34.66, "dk_line": 23.5, "gap": 11.16, "z_score": -1.42, "bet_recommendation": "bet OVER if line < 30.0", "recent_avg": 21.33, "recent_mpg": 36.0, "baseline_games": 62, "threshold": 30.0, "threshold_met": true, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "De'Aaron Fox", "team": "San Antonio Spurs", "stat": "PTS", "status": "COLD", "tier": "MODERATE", "fair_line": 23.53, "dk_line": 14.5, "gap": 9.03, "z_score": -1.12, "bet_recommendation": "bet OVER if line < 19.3", "recent_avg": 14.0, "recent_mpg": 36.0, "baseline_games": 62, "threshold": 19.3, "threshold_met": true, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Julian Champagnie", "team": "San Antonio Spurs", "stat": "FG3M", "status": "HOT", "tier": "MODERATE", "fair_line": 2.65, "dk_line": 2.5, "gap": -0.15, "z_score": 1.05, "bet_recommendation": "bet UNDER if line > 3.4", "recent_avg": 4.33, "recent_mpg": 35.0, "baseline_games": 20, "threshold": 3.4, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "PTS", "status": "HOT", "tier": "WEAK", "fair_line": 6.62, "dk_line": 8.5, "gap": 1.88, "z_score": 1.18, "bet_recommendation": "bet UNDER if line > 9.8", "recent_avg": 14.0, "recent_mpg": 27.3, "baseline_games": 16, "threshold": 9.8, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "PRA", "status": "HOT", "tier": "WEAK", "fair_line": 8.19, "dk_line": 11.5, "gap": 3.31, "z_score": 1.16, "bet_recommendation": "bet UNDER if line > 11.7", "recent_avg": 16.33, "recent_mpg": 27.3, "baseline_games": 16, "threshold": 11.7, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Josh Hart", "team": "New York Knicks", "stat": "PTS", "status": "COLD", "tier": "WEAK", "fair_line": 10.19, "dk_line": 9.5, "gap": 0.69, "z_score": -1.12, "bet_recommendation": "bet OVER if line < 7.0", "recent_avg": 3.0, "recent_mpg": 23.0, "baseline_games": 16, "threshold": 7.0, "threshold_met": false, "direction": "OVER", "injury_flag": "", "injury_desc": "", "regression_probability": null}, {"player": "Landry Shamet", "team": "New York Knicks", "stat": "FG3M", "status": "HOT", "tier": "WEAK", "fair_line": 1.69, "dk_line": 1.5, "gap": -0.19, "z_score": 1.04, "bet_recommendation": "bet UNDER if line > 2.5", "recent_avg": 3.33, "recent_mpg": 27.3, "baseline_games": 16, "threshold": 2.5, "threshold_met": false, "direction": "UNDER", "injury_flag": "", "injury_desc": "", "regression_probability": null}];
+const GAME_INFO   = {"home_team": "New York Knicks", "away_team": "San Antonio Spurs", "start_time_et": "8:30 PM ET", "venue": "Madison Square Garden, New York", "series_record": "NBA Finals - Game 3", "round_label": "NBA Finals"};
 const MODEL_RECORD= null;
 const INJURIES    = [{"player": "David Jones Garcia", "team": "San Antonio Spurs", "status": "OUT", "description": "Right Ankle Surgery"}];
 const STAT_PERF   = {};
@@ -877,6 +899,22 @@ function renderAll() {
   renderHistory();
   renderChart();
   syncUndoRedo();
+}
+
+// ── Snapshot download ────────────────────────────────────────────────────────
+function saveSnapshot() {
+  // Capture the full current page (including paper bets in localStorage state)
+  // and download it as a self-contained HTML file named by today's date.
+  const dateTag = '2026-06-08'.replace(/-/g, '');
+  const fname   = 'dashboard_snapshot_' + dateTag + '.html';
+  const blob    = new Blob([document.documentElement.outerHTML], {type: 'text/html'});
+  const a       = document.createElement('a');
+  a.href        = URL.createObjectURL(blob);
+  a.download    = fname;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

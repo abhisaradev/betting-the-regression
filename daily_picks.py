@@ -284,15 +284,19 @@ def _check_returning(recent_df):
 
 def get_games_for_date(date_str, league_id):
     """
-    Return a list of upcoming (not yet started) games for the given date and league.
+    Return all games for the given date and league, with a predictability flag.
 
     date_str  — "YYYY-MM-DD"
     league_id — NBA_LEAGUE_ID ("00") or WNBA_LEAGUE_ID ("10")
 
-    Filters out games already in progress or final so we don't generate picks
-    for games that have already tipped off.  Each game dict has:
-      game_id, home_team_id, away_team_id, game_status
-    Returns an empty list if no upcoming games or if the API call fails.
+    Returns ALL games (including in-progress and final) so the script always
+    knows tonight's teams even when run mid-game.  Each game dict includes:
+      game_id, home_team_id, away_team_id, game_status, game_is_predictable
+
+    game_is_predictable = True  → game hasn't started; generate picks normally
+    game_is_predictable = False → in progress or final; show rosters only,
+                                  no new picks generated
+    Returns an empty list only if no games exist or the API call fails.
     """
     try:
         scoreboard = scoreboardv3.ScoreboardV3(
@@ -301,17 +305,20 @@ def get_games_for_date(date_str, league_id):
         )
         games_data = scoreboard.get_dict()
         games_list = games_data.get("scoreboard", {}).get("games", [])
-        
+
         games = []
         for game in games_list:
             status_text = game.get("gameStatusText", "Unknown")
-            if any(s in status_text.lower() for s in ["final", "in progress", "qtr", "half"]):
-                continue
+            already_started = any(
+                s in status_text.lower()
+                for s in ["final", "in progress", "qtr", "half"]
+            )
             games.append({
                 "game_id": game["gameId"],
                 "home_team_id": game["homeTeam"]["teamId"],
                 "away_team_id": game["awayTeam"]["teamId"],
-                "game_status": status_text
+                "game_status": status_text,
+                "game_is_predictable": not already_started,
             })
         return games
     except Exception as e:
@@ -749,6 +756,19 @@ def run_for_league(league_name, league_id, current_season, previous_season, toda
     out_skipped = 0
 
     for game in games:
+        if not game.get("game_is_predictable", True):
+            # Game is live or already final — show rosters without generating picks
+            status = game.get("game_status", "In progress")
+            print(f"\n  ⏱️  {status}")
+            print(f"     Game already started — showing rosters only, no new picks generated.")
+            print(f"     Run tomorrow to grade results.")
+            for team_id in [game["home_team_id"], game["away_team_id"]]:
+                roster = get_team_roster_safe(team_id, current_season)
+                if not roster.empty:
+                    names = ", ".join(roster["PLAYER_NAME"].head(6).tolist())
+                    print(f"     Team {team_id}: {names}…")
+            continue
+
         team_ids = [game["home_team_id"], game["away_team_id"]]
         for team_id in team_ids:
             roster = get_team_roster_safe(team_id, current_season)

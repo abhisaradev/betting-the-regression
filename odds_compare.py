@@ -488,7 +488,7 @@ def print_edge_row(row):
     print(f"       Edge gap:        +{row['gap']}")
     print(f"       Bet action:      {row['bet_recommendation']}")
     if row["threshold_met"]:
-        print(f"       ✅ THRESHOLD MET — book line crossed our trigger")
+        print(f"       ✅ TRIGGER CROSSED — book line crossed our trigger")
 
 
 # ==============================================================================
@@ -827,6 +827,34 @@ input[type=number]{width:82px}
   .game{flex-direction:column;align-items:flex-start}
 }
 
+/* ── Model record tracker ── */
+.mrec-card{background:var(--bg-card);border:1px solid var(--border);
+           border-radius:var(--r);padding:12px 16px;margin-bottom:20px}
+.mrec-row{display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.mrec-stat{display:flex;flex-direction:column;align-items:center;gap:4px}
+.mrec-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+          color:var(--text-2);margin-bottom:2px}
+.mrec-ctrl{display:flex;align-items:center;gap:6px}
+.mrec-num{font-size:22px;font-weight:800;min-width:28px;text-align:center}
+.mrec-num.pos{color:var(--accent-hot)}
+.mrec-num.neg{color:var(--bet-under)}
+.mrec-btn{width:22px;height:22px;border:1px solid var(--border);border-radius:4px;
+          background:var(--bg-raised);color:var(--text-1);cursor:pointer;
+          font-size:13px;font-weight:700;line-height:1;font-family:inherit;padding:0}
+.mrec-btn:hover{border-color:var(--text-2)}
+.mrec-wr{font-size:22px;font-weight:800;min-width:52px}
+.mrec-wr.good{color:var(--accent-hot)}
+.mrec-wr.ok{color:#f59e0b}
+.mrec-wr.bad{color:var(--bet-under)}
+.mrec-wr.neutral{color:var(--text-2)}
+/* ── localStorage warning banner ── */
+.ls-warn{font-size:11px;color:#92400e;background:#fef3c7;
+         border:1px solid #fde68a;border-radius:var(--r);
+         padding:6px 10px;margin-bottom:14px}
+@media (prefers-color-scheme: dark) {
+  .ls-warn{color:#fde68a;background:#292000;border-color:#5c4600}
+}
+
 /* ── Print layout (Cmd+P) — picks only, no paper trading ── */
 @media print {
   .paper, .how, .arow, .bform, #hist-sec, .chart-wrap { display: none !important; }
@@ -851,6 +879,10 @@ input[type=number]{width:82px}
   <div class="hdr">
     <h1>Betting the Regression</h1>
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <a href="https://databallr.com/" target="_blank" rel="noopener"
+         style="font-size:11px;color:var(--text-2);text-decoration:none;white-space:nowrap"
+         onmouseover="this.style.textDecoration='underline'"
+         onmouseout="this.style.textDecoration='none'">&#128202; DataBallR</a>
       <span class="hdate">__DATE__</span>
       <button class="snap-btn" onclick="saveSnapshot()"
         style="font-size:11px;padding:3px 10px;border:1px solid var(--border);
@@ -868,7 +900,7 @@ input[type=number]{width:82px}
       <div class="hi"><strong>True avg</strong>Season baseline &mdash; all games in this playoff context</div>
       <div class="hi"><strong>Last 3 games</strong>Recent form that triggered the flag</div>
       <div class="hi"><strong>Gap</strong>How far DK's line sits from the true avg</div>
-      <div class="hi"><strong>Bet threshold</strong>Minimum gap needed to act on this pick</div>
+      <div class="hi"><strong>Bet trigger</strong>DK line must cross this to bet &mdash; the exact DK line that needs to be offered before we act. Think of it as a minimum price: if DK hasn&rsquo;t crossed this number yet, the edge isn&rsquo;t big enough to overcome the vig.</div>
       <div class="hi"><strong>Sample size</strong>Shown on each card &mdash; more games = more reliable baseline</div>
       <div class="hi"><strong>Cold signals</strong>Historically weaker (44% win rate vs 92% for hot fades)</div>
       <div class="cold-note">&#9888; Cold picks (BET OVER) have a significantly weaker track record. Hot fades are the model's core strength.</div>
@@ -897,11 +929,17 @@ input[type=number]{width:82px}
     <div class="mc"><div class="mc-label">Model record</div><div class="mc-val" id="m-record">&#8212;</div></div>
   </div>
 
+  <!-- Model record tracker (TRACKER 1 — manual W/L, persisted in localStorage) -->
+  <div id="model-rec-root"></div>
+
   <!-- Per-stat performance (rendered by JS from STAT_PERF data) -->
   <div id="stat-perf-root"></div>
 
   <!-- Picks -->
   <div id="picks-root"></div>
+
+  <!-- My bets record header (TRACKER 2 — computed from paper trading history) -->
+  <div id="my-bets-rec-root"></div>
 
   <!-- Paper trading -->
   <div class="paper">
@@ -912,6 +950,8 @@ input[type=number]{width:82px}
         <button class="edit-btn" onclick="editBankroll()">edit</button>
       </div>
     </div>
+
+    <div class="ls-warn">&#9888;&#65039; Bets stored locally &mdash; clear browser data and they&rsquo;re gone. Supabase sync coming next session for permanent storage.</div>
 
     <div class="pstats">
       <div class="psc"><div class="psc-lbl">Total P&amp;L</div><div class="psc-val" id="ps-pnl">$0.00</div></div>
@@ -931,6 +971,7 @@ input[type=number]{width:82px}
       <button class="act" id="btn-redo" onclick="redo()" disabled>&#8631; Redo</button>
       <button class="act dng" onclick="clearAllBets()">Clear all bets</button>
       <button class="act dng" onclick="resetBankroll()">Reset bankroll</button>
+      <button class="act" onclick="exportBetsCSV()">&#8595; Export bets CSV</button>
     </div>
 
     <div id="pend-sec" style="display:none">
@@ -1222,7 +1263,7 @@ function pickCard(p, idx) {
     <div class="nc"><div class="nc-lbl">True avg</div><div class="nc-val">${p.fair_line}</div></div>
     <div class="nc"><div class="nc-lbl">DK line</div><div class="nc-val">${p.dk_line}</div></div>
     <div class="nc"><div class="nc-lbl">Gap</div><div class="nc-val ${gapCls}">${gapTxt}</div></div>
-    <div class="nc"><div class="nc-lbl">Threshold</div><div class="nc-val thresh">${threshTxt}</div></div>
+    <div class="nc"><div class="nc-lbl">Bet trigger</div><div class="nc-val thresh">${threshTxt}</div></div>
   </div>
   ${addLink}
 </div>`;
@@ -1349,7 +1390,7 @@ function renderPaperStats() {
     re.textContent = (roi>=0?'+':'')+roi.toFixed(1)+'%';
     re.className   = 'psc-val '+(roi>=0?'pos':'neg');
   } else {
-    re.textContent='&mdash;'; re.className='psc-val';
+    re.textContent='0.0%'; re.className='psc-val';
   }
 }
 
@@ -1438,6 +1479,7 @@ function renderAll() {
   renderPending();
   renderHistory();
   renderChart();
+  renderMyBetsRecord();
   syncUndoRedo();
 }
 
@@ -1457,13 +1499,121 @@ function saveSnapshot() {
   URL.revokeObjectURL(a.href);
 }
 
+// ── Model record tracker (TRACKER 1 — manual W/L, persisted in localStorage) ─
+let modelRec = {wins: 0, losses: 0};
+
+function loadModelRecord() {
+  try {
+    const raw = localStorage.getItem('btr_model_record');
+    if (raw) modelRec = JSON.parse(raw);
+  } catch(e) {}
+}
+function saveModelRecord() {
+  localStorage.setItem('btr_model_record', JSON.stringify(modelRec));
+}
+function adjustModelRecord(field, delta) {
+  modelRec[field] = Math.max(0, (modelRec[field] || 0) + delta);
+  saveModelRecord();
+  renderModelRecord();
+}
+function resetModelRecord() {
+  if (!confirm('Reset model record to 0–0?')) return;
+  modelRec = {wins: 0, losses: 0};
+  saveModelRecord();
+  renderModelRecord();
+}
+function renderModelRecord() {
+  const root = document.getElementById('model-rec-root');
+  if (!root) return;
+  const total = modelRec.wins + modelRec.losses;
+  const wr    = total > 0 ? (100 * modelRec.wins / total) : null;
+  const wrTxt = wr !== null ? wr.toFixed(0)+'%' : '&mdash;';
+  const wrCls = wr !== null ? (wr >= 65 ? 'good' : wr >= 50 ? 'ok' : 'bad') : 'neutral';
+  root.innerHTML = `
+    <div class="sec-hdr">Model record &mdash; STRONG + top MODERATE picks</div>
+    <div class="mrec-card">
+      <div class="mrec-row">
+        <div class="mrec-stat">
+          <div class="mrec-lbl">Wins</div>
+          <div class="mrec-ctrl">
+            <button class="mrec-btn" onclick="adjustModelRecord('wins',-1)">&minus;</button>
+            <span class="mrec-num pos">${modelRec.wins}</span>
+            <button class="mrec-btn" onclick="adjustModelRecord('wins',1)">+</button>
+          </div>
+        </div>
+        <div class="mrec-stat">
+          <div class="mrec-lbl">Losses</div>
+          <div class="mrec-ctrl">
+            <button class="mrec-btn" onclick="adjustModelRecord('losses',-1)">&minus;</button>
+            <span class="mrec-num neg">${modelRec.losses}</span>
+            <button class="mrec-btn" onclick="adjustModelRecord('losses',1)">+</button>
+          </div>
+        </div>
+        <div class="mrec-stat">
+          <div class="mrec-lbl">Win rate</div>
+          <div class="mrec-wr ${wrCls}">${wrTxt}</div>
+        </div>
+        <button class="act" onclick="resetModelRecord()" style="margin-left:auto;font-size:11px;padding:4px 10px">Reset</button>
+      </div>
+    </div>`;
+}
+
+// ── My bets record header (TRACKER 2 — computed from paper trading history) ──
+function renderMyBetsRecord() {
+  const root = document.getElementById('my-bets-rec-root');
+  if (!root) return;
+  if (!state.history.length) { root.innerHTML = ''; return; }
+  const wins   = state.history.filter(h=>h.result==='WIN').length;
+  const losses = state.history.filter(h=>h.result==='LOSS').length;
+  const total  = wins + losses;
+  const staked = state.history.reduce((s,h)=>s+h.stake, 0);
+  const pnl    = Math.round((state.bankroll - state.start)*100)/100;
+  const roi    = staked > 0 ? pnl / staked * 100 : null;
+  const wr     = total > 0 ? (100*wins/total).toFixed(0)+'%' : '&mdash;';
+  const roiTxt = roi !== null ? (roi>=0?'+':'')+roi.toFixed(1)+'%' : '0.0%';
+  const roiCls = roi !== null ? (roi>=0?'pos':'neg') : '';
+  root.innerHTML = `
+    <div class="sec-hdr">My bets record</div>
+    <div class="mrec-card">
+      <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
+        <span><span style="font-size:18px;font-weight:800;color:var(--accent-hot)">${wins}</span>&thinsp;<span style="font-size:12px;color:var(--text-2)">W</span></span>
+        <span><span style="font-size:18px;font-weight:800;color:var(--bet-under)">${losses}</span>&thinsp;<span style="font-size:12px;color:var(--text-2)">L</span></span>
+        <span><span style="font-size:18px;font-weight:800">${wr}</span>&thinsp;<span style="font-size:12px;color:var(--text-2)">win rate</span></span>
+        <span><span class="${roiCls}" style="font-size:18px;font-weight:800">${roiTxt}</span>&thinsp;<span style="font-size:12px;color:var(--text-2)">ROI</span></span>
+      </div>
+    </div>`;
+}
+
+// ── Export bets as CSV ───────────────────────────────────────────────────────
+function exportBetsCSV() {
+  if (!state.history.length) { alert('No graded bets to export yet.'); return; }
+  const header = 'date,player,stat,direction,dk_line,stake,profit,result';
+  const rows = state.history.map(h => {
+    const d    = new Date(Math.floor(h.id));
+    const date = d.toLocaleDateString('en-CA');
+    return [date, h.player, h.stat, h.dir, h.line,
+            h.stake.toFixed(2), h.profit.toFixed(2), h.result].join(',');
+  });
+  const csv  = [header, ...rows].join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'bets_export___DATE__.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadState();
+loadModelRecord();
 renderInjuries();
 renderStatPerf();
 renderPicks();
 buildDropdown();
 renderAll();
+renderModelRecord();
 </script>
 </body>
 </html>

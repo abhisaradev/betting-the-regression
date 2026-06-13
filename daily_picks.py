@@ -282,12 +282,103 @@ def _check_returning(recent_df):
 # DATA PULLING
 # ==============================================================================
 
+def _get_nba_games_espn(date_str):
+    """
+    Fetch NBA games for date_str using ESPN's public scoreboard API.
+
+    Used instead of stats.nba.com (ScoreboardV3) which blocks Python requests
+    without browser-level auth. ESPN's scoreboard is unauthenticated and
+    reliable — same source odds_compare.py already uses successfully.
+
+    Maps ESPN team abbreviations back to NBA API team IDs (needed for
+    CommonTeamRoster calls downstream) using nba_api's static team list.
+    """
+    from nba_api.stats.static import teams as nba_teams_static
+
+    all_teams = nba_teams_static.get_teams()
+    # Primary lookup: abbreviation (e.g. "SAS"). Fallback: normalised full name.
+    # ESPN uses shortened abbreviations like "SA"/"NY" vs NBA API's "SAS"/"NYK",
+    # so the name-based fallback is essential.
+    abbrev_to_id   = {t["abbreviation"].lower(): t["id"] for t in all_teams}
+    fullname_to_id = {t["full_name"].lower(): t["id"] for t in all_teams}
+    nickname_to_id = {t["nickname"].lower(): t["id"] for t in all_teams}
+
+    def _resolve_espn_team(team_dict):
+        abbrev = team_dict.get("abbreviation", "").lower()
+        if abbrev in abbrev_to_id:
+            return abbrev_to_id[abbrev]
+        # Fall back to display name ("San Antonio Spurs") or short name ("Spurs")
+        display = team_dict.get("displayName", "").lower()
+        if display in fullname_to_id:
+            return fullname_to_id[display]
+        short = team_dict.get("shortDisplayName", team_dict.get("name", "")).lower()
+        return nickname_to_id.get(short)
+
+    date_compact = date_str.replace("-", "")
+    url = (
+        f"https://site.api.espn.com/apis/site/v2/sports/basketball"
+        f"/nba/scoreboard?dates={date_compact}"
+    )
+    try:
+        result = subprocess.run(
+            ["curl", "-sk", "--max-time", "10", url],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"  ESPN scoreboard fetch failed (curl exit {result.returncode})")
+            return []
+        data = json.loads(result.stdout)
+    except Exception as e:
+        print(f"  ESPN scoreboard error: {str(e)[:80]}")
+        return []
+
+    games = []
+    for event in data.get("events", []):
+        status = event.get("status", {})
+        status_id = str(status.get("type", {}).get("id", "1"))
+        status_text = status.get("type", {}).get("detail", "Scheduled")
+        already_started = status_id in ("2", "3")
+
+        comps = event.get("competitions", [])
+        if not comps:
+            continue
+        competitors = comps[0].get("competitors", [])
+        if len(competitors) < 2:
+            continue
+
+        home_team_id = away_team_id = None
+        for c in competitors:
+            nba_id = _resolve_espn_team(c.get("team", {}))
+            if nba_id is None:
+                continue
+            if c.get("homeAway") == "home":
+                home_team_id = nba_id
+            else:
+                away_team_id = nba_id
+
+        if home_team_id is None or away_team_id is None:
+            continue
+
+        games.append({
+            "game_id":            event.get("id", ""),
+            "home_team_id":       home_team_id,
+            "away_team_id":       away_team_id,
+            "game_status":        status_text,
+            "game_is_predictable": not already_started,
+        })
+    return games
+
+
 def get_games_for_date(date_str, league_id):
     """
     Return all games for the given date and league, with a predictability flag.
 
     date_str  — "YYYY-MM-DD"
     league_id — NBA_LEAGUE_ID ("00") or WNBA_LEAGUE_ID ("10")
+
+    NBA games use ESPN's scoreboard API (stats.nba.com times out without
+    browser-level auth headers; ESPN is public and already used by odds_compare.py).
+    WNBA games still use nba_api ScoreboardV3.
 
     Returns ALL games (including in-progress and final) so the script always
     knows tonight's teams even when run mid-game.  Each game dict includes:
@@ -298,6 +389,10 @@ def get_games_for_date(date_str, league_id):
                                   no new picks generated
     Returns an empty list only if no games exist or the API call fails.
     """
+    if league_id == NBA_LEAGUE_ID:
+        return _get_nba_games_espn(date_str)
+
+    # WNBA: keep nba_api approach (ESPN WNBA scoreboard has different structure)
     try:
         scoreboard = scoreboardv3.ScoreboardV3(
             game_date=date_str,

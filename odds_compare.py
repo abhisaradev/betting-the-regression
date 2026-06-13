@@ -855,6 +855,25 @@ input[type=number]{width:82px}
   .ls-warn{color:#fde68a;background:#292000;border-color:#5c4600}
 }
 
+/* ── Picks log ── */
+.plog{background:var(--bg-card);border:1px solid var(--border);
+      border-radius:var(--r-lg);padding:14px 18px;margin-top:28px}
+.plog-hdr{display:flex;justify-content:space-between;align-items:center;
+          margin-bottom:10px;cursor:pointer;user-select:none}
+.plog-title{font-size:15px;font-weight:800}
+.plog-toggle{font-size:12px;color:var(--text-2)}
+.plog-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.plog-tbl th{font-size:10px;text-transform:uppercase;letter-spacing:.4px;
+             color:var(--text-2);text-align:left;padding:5px 8px;
+             border-bottom:2px solid var(--border)}
+.plog-tbl td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.plog-tbl tr:last-child td{border-bottom:none}
+.plog-date{color:var(--text-3);white-space:nowrap}
+.plog-empty{text-align:center;color:var(--text-3);padding:20px;font-size:13px}
+.plog-clr{font-size:11px;color:var(--bet-under);cursor:pointer;
+          background:none;border:none;font-family:inherit;padding:0}
+.plog-clr:hover{text-decoration:underline}
+
 /* ── Print layout (Cmd+P) — picks only, no paper trading ── */
 @media print {
   .paper, .how, .arow, .bform, #hist-sec, .chart-wrap { display: none !important; }
@@ -940,6 +959,9 @@ input[type=number]{width:82px}
 
   <!-- My bets record header (TRACKER 2 — computed from paper trading history) -->
   <div id="my-bets-rec-root"></div>
+
+  <!-- Picks log — persisted in localStorage, STRONG + MODERATE only -->
+  <div class="plog" id="picks-log-root"></div>
 
   <!-- Paper trading -->
   <div class="paper">
@@ -1605,6 +1627,130 @@ function exportBetsCSV() {
   URL.revokeObjectURL(a.href);
 }
 
+// ── Picks log (STRONG + MODERATE, persisted in localStorage, 90-day TTL) ─────
+// Storage: btr_picks_log → [{date, player, stat, dir, tier, dk_line, gap, z_score}]
+// One entry per player+stat+date combo. Auto-purges entries older than 90 days.
+
+const PLOG_KEY     = 'btr_picks_log';
+const PLOG_MAX_DAYS = 90;
+
+function plogLoad() {
+  try {
+    const raw = localStorage.getItem(PLOG_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e) { return []; }
+}
+
+function plogSave(log) {
+  try { localStorage.setItem(PLOG_KEY, JSON.stringify(log)); } catch(e) {}
+}
+
+function logPicksToday() {
+  // Pull today's STRONG + MODERATE picks from the injected PICKS constant
+  const today = '__DATE__';
+  const notable = PICKS.filter(p => p.tier === 'STRONG' || p.tier === 'MODERATE');
+  if (!notable.length) return;
+
+  let log = plogLoad();
+
+  // Purge entries older than 90 days
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - PLOG_MAX_DAYS);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  log = log.filter(e => e.date >= cutoffStr);
+
+  // Add today's picks (deduplicate by date+player+stat)
+  const existing = new Set(log.filter(e => e.date === today).map(e => e.player+'|'+e.stat));
+  for (const p of notable) {
+    const key = p.player + '|' + p.stat;
+    if (!existing.has(key)) {
+      log.push({
+        date:     today,
+        player:   p.player,
+        team:     p.team,
+        stat:     p.stat,
+        dir:      p.direction,
+        tier:     p.tier,
+        dk_line:  p.dk_line,
+        gap:      p.gap,
+        z_score:  p.z_score,
+      });
+      existing.add(key);
+    }
+  }
+
+  plogSave(log);
+}
+
+function renderPicksLog() {
+  const root = document.getElementById('picks-log-root');
+  if (!root) return;
+
+  const log = plogLoad();
+  if (!log.length) {
+    root.innerHTML = `
+      <div class="plog-hdr">
+        <span class="plog-title">Picks log</span>
+        <span class="plog-toggle" style="color:var(--text-3)">No entries yet — runs nightly</span>
+      </div>`;
+    return;
+  }
+
+  // Sort most-recent first
+  const sorted = [...log].sort((a,b) => b.date.localeCompare(a.date));
+  const collapsed = JSON.parse(localStorage.getItem('btr_plog_collapsed') || 'false');
+
+  const rows = sorted.map(e => {
+    const dirCls = e.dir === 'UNDER' ? 'color:var(--bet-under)' : 'color:var(--bet-over)';
+    const tierBadge = `<span class="badge b-${esc(e.tier)}">${esc(e.tier)}</span>`;
+    const gapSign   = e.gap > 0 ? '+' : '';
+    return `<tr>
+      <td class="plog-date">${esc(e.date)}</td>
+      <td><strong>${esc(e.player)}</strong> <span style="color:var(--text-3);font-size:11px">${esc(e.team)}</span></td>
+      <td><span class="spill">${esc(e.stat)}</span></td>
+      <td>${tierBadge}</td>
+      <td style="${dirCls};font-weight:700">${esc(e.dir)}</td>
+      <td style="text-align:right">${e.dk_line}</td>
+      <td style="text-align:right">${gapSign}${e.gap}</td>
+      <td style="text-align:right;color:var(--text-2)">${e.z_score}</td>
+    </tr>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="plog-hdr" onclick="togglePicksLog()">
+      <span class="plog-title">Picks log <span style="font-size:12px;font-weight:400;color:var(--text-2)">${log.length} entries</span></span>
+      <div style="display:flex;gap:12px;align-items:center">
+        <button class="plog-clr" onclick="event.stopPropagation();clearPicksLog()">Clear log</button>
+        <span class="plog-toggle">${collapsed ? '&#9660; Show' : '&#9650; Hide'}</span>
+      </div>
+    </div>
+    <div id="plog-body" style="display:${collapsed ? 'none' : 'block'}">
+      <table class="plog-tbl">
+        <thead><tr>
+          <th>Date</th><th>Player</th><th>Stat</th><th>Tier</th>
+          <th>Dir</th><th style="text-align:right">DK Line</th>
+          <th style="text-align:right">Gap</th><th style="text-align:right">Z</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function togglePicksLog() {
+  const body = document.getElementById('plog-body');
+  if (!body) return;
+  const collapsed = body.style.display === 'none';
+  body.style.display = collapsed ? 'block' : 'none';
+  localStorage.setItem('btr_plog_collapsed', JSON.stringify(!collapsed));
+  renderPicksLog();
+}
+
+function clearPicksLog() {
+  if (!confirm('Clear entire picks log? This cannot be undone.')) return;
+  localStorage.removeItem(PLOG_KEY);
+  renderPicksLog();
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadState();
 loadModelRecord();
@@ -1614,6 +1760,8 @@ renderPicks();
 buildDropdown();
 renderAll();
 renderModelRecord();
+logPicksToday();
+renderPicksLog();
 </script>
 </body>
 </html>
@@ -1681,18 +1829,27 @@ def main():
     preds = nba_preds[nba_preds["date"].astype(str) == pred_date].copy()
 
     if preds.empty:
-        # Scan back up to 7 days to find the most recent predictions
+        # Scan back to tell the user what IS available, then exit loudly.
+        # Do NOT silently show stale picks — wrong game, wrong date, wrong picks.
         for days_back in range(1, 8):
             candidate = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-            preds = nba_preds[nba_preds["date"].astype(str) == candidate].copy()
-            if not preds.empty:
-                pred_date = candidate
-                print(f"\n  ℹ️  No picks for {TODAY} — using most recent picks from {candidate}")
-                break
+            stale = nba_preds[nba_preds["date"].astype(str) == candidate]
+            if not stale.empty:
+                print(f"\n{'!'*70}")
+                print(f"  ❌  NO PICKS FOR TODAY ({TODAY})")
+                print(f"  Most recent picks are from {candidate} ({len(stale)} picks).")
+                print(f"  Showing stale data would display the wrong game and wrong picks.")
+                print(f"{'!'*70}")
+                print(f"\n  Run:  python3.12 daily_picks.py")
+                print(f"  Then re-run:  python3.12 odds_compare.py\n")
+                sys.exit(1)
 
-    if preds.empty:
-        print(f"\n⚠️  No NBA predictions found in the last 7 days. Run daily_picks.py first.")
-        sys.exit(0)
+        print(f"\n{'!'*70}")
+        print(f"  ❌  NO NBA PREDICTIONS FOUND (checked last 7 days)")
+        print(f"{'!'*70}")
+        print(f"\n  Run:  python3.12 daily_picks.py")
+        print(f"  Then re-run:  python3.12 odds_compare.py\n")
+        sys.exit(1)
 
     print(f"\n  Loaded {len(preds)} NBA prediction(s) for {pred_date}:")
     for _, r in preds.iterrows():
